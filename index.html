@@ -290,6 +290,7 @@ body.layout .movable *{pointer-events:none}
         <input id="cyclosmAlpha" type="range" min="0" max="100" step="5" value="100" title="Opacidad de CyclOSM sobre el satélite">
         <span>Capas</span>
         <div class="layers">
+          <label class="check"><input type="checkbox" id="ovNames"> Pistas, sendas y nombres (OSM)</label>
           <label class="check"><input type="checkbox" id="ovLite"> Sendas y caminos (CyclOSM lite)</label>
           <label class="check"><input type="checkbox" id="ovMtb"> Rutas MTB señalizadas</label>
           <label class="check"><input type="checkbox" id="ovHike"> Rutas de senderismo (GR, PR, SL)</label>
@@ -387,7 +388,7 @@ const PREFS_KEY = 'pendientes3d.prefs';
 // Capas de Waymarked Trails a través de Vercel (/wmt → tile.waymarkedtrails.org): así el navegador
 // puede usarlas en el mapa aunque su servidor no envíe cabeceras CORS. En local, directo.
 const WMT = /\.vercel\.app$/.test(location.hostname) ? location.origin + '/wmt' : 'https://tile.waymarkedtrails.org';
-const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true, arrowStep: 'auto', playAlpha: 86, ovMtb: false, ovHike: false, ovLite: false, cyclosmAlpha: 100 },
+const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true, arrowStep: 'auto', playAlpha: 86, ovMtb: false, ovHike: false, ovLite: false, cyclosmAlpha: 100, ovNames: true },
   (() => { try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch (e) { return {}; } })());
 function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {} }
 
@@ -416,7 +417,9 @@ const map = new maplibregl.Map({
   container: 'map',
   style: {
     version: 8,
+    glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
     sources: {
+      ofm: { type: 'vector', url: 'https://tiles.openfreemap.org/planet', attribution: 'Nombres: OpenFreeMap · © colaboradores de OpenStreetMap' },
       sat: {
         type: 'raster',
         tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
@@ -468,7 +471,32 @@ const map = new maplibregl.Map({
       { id: 'cyclosm', type: 'raster', source: 'cyclosm', paint: { 'raster-opacity': prefs.cyclosmAlpha / 100 }, layout: { visibility: prefs.basemap === 'cyclosm' ? 'visible' : 'none' } },
       { id: 'cyclosmLite', type: 'raster', source: 'cyclosmLite', layout: { visibility: prefs.ovLite ? 'visible' : 'none' } },
       { id: 'wmHike', type: 'raster', source: 'wmHike', paint: { 'raster-opacity': 0.9 }, layout: { visibility: prefs.ovHike ? 'visible' : 'none' } },
-      { id: 'wmMtb', type: 'raster', source: 'wmMtb', paint: { 'raster-opacity': 0.95 }, layout: { visibility: prefs.ovMtb ? 'visible' : 'none' } }
+      { id: 'wmMtb', type: 'raster', source: 'wmMtb', paint: { 'raster-opacity': 0.95 }, layout: { visibility: prefs.ovMtb ? 'visible' : 'none' } },
+      // Pistas y sendas de OpenStreetMap con su nombre, nítidas sobre el satélite
+      { id: 'osmTracks', type: 'line', source: 'ofm', 'source-layer': 'transportation', minzoom: 12,
+        filter: ['==', ['get', 'class'], 'track'],
+        layout: { visibility: prefs.ovNames ? 'visible' : 'none', 'line-cap': 'round' },
+        paint: { 'line-color': '#ffd166', 'line-opacity': 0.85, 'line-width': ['interpolate', ['linear'], ['zoom'], 12, 1, 16, 2.5], 'line-dasharray': [3, 1.5] } },
+      { id: 'osmPaths', type: 'line', source: 'ofm', 'source-layer': 'transportation', minzoom: 12,
+        filter: ['==', ['get', 'class'], 'path'],
+        layout: { visibility: prefs.ovNames ? 'visible' : 'none', 'line-cap': 'round' },
+        paint: { 'line-color': '#ff8a5c', 'line-opacity': 0.9, 'line-width': ['interpolate', ['linear'], ['zoom'], 12, 0.8, 16, 2], 'line-dasharray': [1, 1.2] } },
+      { id: 'osmNames', type: 'symbol', source: 'ofm', 'source-layer': 'transportation_name', minzoom: 13,
+        filter: ['in', ['get', 'class'], ['literal', ['path', 'track', 'minor', 'service', 'tertiary', 'secondary', 'primary', 'trunk']]],
+        layout: {
+          visibility: prefs.ovNames ? 'visible' : 'none',
+          'text-field': ['coalesce', ['get', 'name:es'], ['get', 'name']],
+          'text-font': ['Noto Sans Regular'], 'text-size': ['interpolate', ['linear'], ['zoom'], 13, 10.5, 17, 13.5],
+          'symbol-placement': 'line', 'text-max-angle': 35, 'symbol-spacing': 280, 'text-padding': 4
+        },
+        paint: { 'text-color': '#ffffff', 'text-halo-color': 'rgba(0,0,0,.85)', 'text-halo-width': 1.6 } },
+      { id: 'osmPeaks', type: 'symbol', source: 'ofm', 'source-layer': 'mountain_peak', minzoom: 12,
+        layout: {
+          visibility: prefs.ovNames ? 'visible' : 'none',
+          'text-field': ['concat', '▲ ', ['coalesce', ['get', 'name:es'], ['get', 'name'], ''], ['case', ['has', 'ele'], ['concat', ' ', ['to-string', ['get', 'ele']], ' m'], '']],
+          'text-font': ['Noto Sans Regular'], 'text-size': 11.5, 'text-anchor': 'top', 'text-offset': [0, 0.3]
+        },
+        paint: { 'text-color': '#ffffff', 'text-halo-color': 'rgba(0,0,0,.85)', 'text-halo-width': 1.5 } }
     ],
     terrain: { source: 'dem', exaggeration: prefs.exag }
   },
@@ -1174,10 +1202,14 @@ function offlineUrlsFor(pts) {
         if (prefs.ovHike) add(`${WMT}/hiking/${z}/${x}/${y}.png`, AVG_KB.ov);
         // Relieve: hasta z14 con margen, z15 solo bajo la ruta
         if (z <= 14) add(`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`, AVG_KB.dem);
+        const vt = prefs.ovNames && map.getSource('ofm') && map.getSource('ofm').tiles && map.getSource('ofm').tiles[0];
+        if (vt && z <= 14) add(vt.replace('{z}', z).replace('{x}', x).replace('{y}', y), 30);
       }
       if (z === 15) add(`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/15/${tx}/${ty}.png`, AVG_KB.dem);
     }
   }
+  if (prefs.ovNames) for (const r of ['0-255', '256-511', '8192-8447', '9472-9727'])
+    add(`https://tiles.openfreemap.org/fonts/Noto%20Sans%20Regular/${r}.pbf`, 40);
   return urls;
 }
 const fmtMB = kb => kb >= 1024 ? (kb / 1024).toFixed(kb >= 10240 ? 0 : 1).replace('.', ',') + ' MB' : Math.round(kb) + ' KB';
@@ -1885,10 +1917,13 @@ function applyBasemap() {
   // Con CyclOSM, el satélite se carga debajo solo si se ha pedido transparencia
   const satUnder = bm === 'cyclosm' && prefs.cyclosmAlpha < 100;
   const want = { sat: bm !== 'cyclosm' || satUnder, roads: bm === 'hybrid', places: bm === 'hybrid', cyclosm: bm === 'cyclosm',
-                 cyclosmLite: prefs.ovLite && bm !== 'cyclosm', wmMtb: prefs.ovMtb, wmHike: prefs.ovHike };
+                 cyclosmLite: prefs.ovLite && bm !== 'cyclosm', wmMtb: prefs.ovMtb, wmHike: prefs.ovHike,
+                 // con CyclOSM a tope ya hay nombres; las líneas se ocultan para no duplicar
+                 osmTracks: prefs.ovNames && bm !== 'cyclosm', osmPaths: prefs.ovNames && bm !== 'cyclosm',
+                 osmNames: prefs.ovNames && !(bm === 'cyclosm' && prefs.cyclosmAlpha >= 100), osmPeaks: prefs.ovNames };
   for (const id in want) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', v(want[id]));
   if (map.getLayer('cyclosm')) map.setPaintProperty('cyclosm', 'raster-opacity', prefs.cyclosmAlpha / 100);
-  $('ovMtb').checked = prefs.ovMtb; $('ovHike').checked = prefs.ovHike; $('ovLite').checked = prefs.ovLite;
+  $('ovMtb').checked = prefs.ovMtb; $('ovHike').checked = prefs.ovHike; $('ovLite').checked = prefs.ovLite; $('ovNames').checked = prefs.ovNames;
   $('cyclosmAlpha').value = prefs.cyclosmAlpha;
   $('cyclosmAlpha').hidden = $('cyclosmAlphaLbl').hidden = bm !== 'cyclosm';
   $('ovLite').closest('label').hidden = bm === 'cyclosm';
@@ -1899,6 +1934,7 @@ document.querySelectorAll('[data-basemap]').forEach(b => b.addEventListener('cli
 }));
 $('ovMtb').addEventListener('change', e => { prefs.ovMtb = e.target.checked; savePrefs(); applyBasemap(); });
 $('ovLite').addEventListener('change', e => { prefs.ovLite = e.target.checked; savePrefs(); applyBasemap(); });
+$('ovNames').addEventListener('change', e => { prefs.ovNames = e.target.checked; savePrefs(); applyBasemap(); });
 $('cyclosmAlpha').addEventListener('input', e => { prefs.cyclosmAlpha = +e.target.value; savePrefs(); applyBasemap(); });
 $('ovHike').addEventListener('change', e => { prefs.ovHike = e.target.checked; savePrefs(); applyBasemap(); });
 $('showArrows').checked = prefs.arrows;
