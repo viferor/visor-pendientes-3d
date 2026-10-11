@@ -123,8 +123,7 @@ body.drawing #map canvas{cursor:crosshair}
 #playBtn{flex:none;width:40px;height:40px;border-radius:50%;border:0;background:var(--paint);color:#1b1a0c;font:700 16px/1 var(--body);cursor:pointer}
 #playBtn:focus-visible{outline:2px solid #fff;outline-offset:2px}
 #playProgress{flex:1;min-width:60px;accent-color:var(--paint)}
-#player .seg{flex:none}
-#player .seg button{padding:6px 7px}
+#playSpeed{flex:none;width:auto;font-variant-numeric:tabular-nums}
 #live{position:absolute;right:12px;top:calc(12px + var(--safe-area-inset-top, env(safe-area-inset-top,0px)) + 150px);z-index:3;
   display:grid;grid-template-columns:repeat(2, auto);gap:8px 16px;padding:10px 14px;background:var(--panel);
   backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid var(--line);border-radius:10px;font-variant-numeric:tabular-nums}
@@ -271,12 +270,16 @@ body.drawing #map canvas{cursor:crosshair}
 <div id="player" hidden>
   <button type="button" id="playBtn" aria-label="Reproducir">▶</button>
   <input type="range" id="playProgress" min="0" max="1000" value="0" aria-label="Posición en la ruta">
-  <div class="seg" role="group" aria-label="Velocidad de reproducción">
-    <button type="button" data-speed="1" aria-pressed="true">1x</button>
-    <button type="button" data-speed="2" aria-pressed="false">2x</button>
-    <button type="button" data-speed="3" aria-pressed="false">3x</button>
-    <button type="button" data-speed="5" aria-pressed="false">5x</button>
-  </div>
+  <select id="playSpeed" aria-label="Velocidad de reproducción">
+    <option value="-5">◀◀ 5x</option>
+    <option value="-3">◀◀ 3x</option>
+    <option value="-2">◀◀ 2x</option>
+    <option value="-1">◀◀ 1x</option>
+    <option value="1" selected>▶ 1x</option>
+    <option value="2">▶ 2x</option>
+    <option value="3">▶ 3x</option>
+    <option value="5">▶ 5x</option>
+  </select>
 </div>
 <div id="live" hidden aria-live="off"></div>
 
@@ -995,7 +998,7 @@ function playFrame(now) {
   if (!PLAY.on) return;
   const dt = Math.min(0.1, (now - PLAY.last) / 1000); PLAY.last = now;
   const end = playAxis();
-  PLAY.x = Math.min(end, PLAY.x + end / BASE_SECONDS * PLAY.speed * dt);
+  PLAY.x = Math.max(0, Math.min(end, PLAY.x + end / BASE_SECONDS * PLAY.speed * dt));
   const i = idxAtAxis(PLAY.x), j = Math.min(i + 1, S.pts.length - 1), a = S.pts[i], b = S.pts[j];
   const span = axisOf(b) - axisOf(a), f = span > 0 ? Math.min(1, (PLAY.x - axisOf(a)) / span) : 0;
   const lon = a.lon + (b.lon - a.lon) * f, lat = a.lat + (b.lat - a.lat) * f;
@@ -1008,13 +1011,15 @@ function playFrame(now) {
   map.jumpTo({ center: [lon, lat], bearing: PLAY.brg });
   PLAY.moving = false;
   $('playProgress').value = PLAY.x / end * 1000;
-  if (PLAY.x >= end) { pausePlay(true); return; }
+  if ((PLAY.speed > 0 && PLAY.x >= end) || (PLAY.speed < 0 && PLAY.x <= 0)) { pausePlay(true); return; }
   requestAnimationFrame(playFrame);
 }
 function startPlay() {
   if (!S.pts) return;
-  if (PLAY.x >= playAxis() - 1e-6) PLAY.x = 0;
   if (S.sel != null && !PLAY.x) PLAY.x = axisOf(S.pts[S.sel]);
+  // Al llegar a un extremo, vuelve a empezar desde el otro
+  if (PLAY.speed > 0 && PLAY.x >= playAxis() - 1e-6) PLAY.x = 0;
+  if (PLAY.speed < 0 && PLAY.x <= 1e-6) PLAY.x = playAxis();
   PLAY.on = true; PLAY.brg = null; PLAY.last = performance.now();
   document.body.classList.add('playing');
   $('playBtn').textContent = '❚❚'; $('playBtn').setAttribute('aria-label', 'Pausa');
@@ -1036,10 +1041,10 @@ function showPlayer() {
   if (!ok) { if (PLAY.on) pausePlay(); $('live').hidden = true; }
 }
 $('playBtn').addEventListener('click', () => PLAY.on ? pausePlay() : startPlay());
-document.querySelectorAll('[data-speed]').forEach(b => b.addEventListener('click', () => {
-  PLAY.speed = +b.dataset.speed;
-  document.querySelectorAll('[data-speed]').forEach(x => x.setAttribute('aria-pressed', x === b));
-}));
+$('playSpeed').addEventListener('change', e => {
+  PLAY.speed = +e.target.value;
+  if (!PLAY.on && $('playBtn').textContent === '↺') { $('playBtn').textContent = '▶'; $('playBtn').setAttribute('aria-label', 'Reproducir'); }
+});
 $('playProgress').addEventListener('input', e => {
   if (!S.pts) return;
   PLAY.x = e.target.value / 1000 * playAxis();
