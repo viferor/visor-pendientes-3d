@@ -84,6 +84,7 @@ select,input[type=text]{background:rgba(255,255,255,.06);color:var(--text);borde
 input[type=range]{accent-color:var(--paint)}
 .seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
 .seg button{flex:1;min-width:0;background:none;border:0;color:var(--muted);padding:6px 3px;font:600 12.5px var(--body);cursor:pointer;white-space:nowrap}
+#drawTools .seg button{font-size:11.5px;padding:6px 1px}
 .seg button+button{border-left:1px solid var(--line)}
 .seg button[aria-pressed=true]{background:rgba(245,224,74,.18);color:var(--paint)}
 .seg button:disabled{opacity:.4;cursor:default}
@@ -210,9 +211,10 @@ body.layout .movable *{pointer-events:none}
       <div class="ctl">
         <span>Seguir</span>
         <div class="seg" role="group" aria-label="Cómo une los puntos">
-          <button type="button" data-route="bike">Carretera</button>
-          <button type="button" data-route="foot">Caminos</button>
-          <button type="button" data-route="line">Recta</button>
+          <button type="button" data-route="bike" title="Carreteras y carriles bici">Carretera</button>
+          <button type="button" data-route="trekking" title="Pistas y caminos rurales, evitando tráfico y teniendo en cuenta las cuestas">Pistas</button>
+          <button type="button" data-route="hiking" title="Senderos de montaña y sendas estrechas">Senderos</button>
+          <button type="button" data-route="line" title="Línea recta entre puntos">Recta</button>
         </div>
         <label for="routeName">Nombre</label>
         <input type="text" id="routeName" value="Mi ruta" maxlength="60" autocomplete="off">
@@ -396,7 +398,7 @@ const map = new maplibregl.Map({
         type: 'raster-dem',
         tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
         tileSize: 256, maxzoom: 15, encoding: 'terrarium',
-        attribution: 'Relieve: Terrain Tiles (Mapzen / AWS) · Rutas: OSRM / FOSSGIS · © OpenStreetMap'
+        attribution: 'Relieve: Terrain Tiles (Mapzen / AWS) · Rutas: OSRM / FOSSGIS, BRouter · © OpenStreetMap'
       }
     },
     layers: [
@@ -1355,7 +1357,7 @@ function syncMode() {
 
 /* ---------- Dibujo de rutas ---------- */
 // legs[i] une wps[i] y wps[i+1]; fixed[i] = tramo dibujado a mano alzada (no se recalcula por carreteras)
-const D = { active: false, wps: [], legs: [], legReq: [], fixed: [], route: prefs.route, warn: '', freehand: false };
+const D = { active: false, wps: [], legs: [], legReq: [], fixed: [], route: prefs.route === 'foot' ? 'hiking' : prefs.route, warn: '', freehand: false };
 
 function densify(coords, step) {
   const out = [];
@@ -1376,9 +1378,28 @@ async function routeOSRM(a, b, mode) {
   if (!r.ok) throw new Error('routing ' + r.status);
   const j = await r.json();
   if (j.code !== 'Ok' || !j.routes || !j.routes.length) throw new Error('sin ruta');
-  const c = j.routes[0].geometry.coordinates;
-  // une la geometría con los puntos tocados para que no queden huecos
-  return [[a.lng, a.lat], ...c, [b.lng, b.lat]];
+  // Sin añadir los puntos tocados: si caían fuera del camino, creaban "picos" de ida y vuelta
+  return j.routes[0].geometry.coordinates;
+}
+
+// BRouter (brouter.de): rutas por pistas y senderos según OpenStreetMap, teniendo en cuenta el
+// tipo de firme, la dificultad del sendero y las cuestas. Perfiles públicos: trekking y hiking-mountain.
+async function routeBRouter(a, b, profile) {
+  const url = `https://brouter.de/brouter?lonlats=${a.lng.toFixed(6)},${a.lat.toFixed(6)}|${b.lng.toFixed(6)},${b.lat.toFixed(6)}` +
+    `&profile=${profile}&alternativeidx=0&format=geojson`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error((await r.text().catch(() => '')) || 'brouter ' + r.status);
+  const j = await r.json();
+  const f = j.features && j.features[0];
+  if (!f || !f.geometry || !f.geometry.coordinates.length) throw new Error('sin ruta');
+  return f.geometry.coordinates.map(c => [c[0], c[1]]);
+}
+async function routeLeg(a, b, mode) {
+  if (mode === 'trekking' || mode === 'hiking') {
+    try { return await routeBRouter(a, b, mode === 'hiking' ? 'hiking-mountain' : 'trekking'); }
+    catch (e) { return await routeOSRM(a, b, mode === 'hiking' ? 'foot' : 'bike'); }   // respaldo
+  }
+  return await routeOSRM(a, b, mode);
 }
 
 async function computeLeg(i) {
@@ -1392,7 +1413,7 @@ async function computeLeg(i) {
   let coords;
   if (D.route === 'line') coords = [[a.lng, a.lat], [b.lng, b.lat]];
   else {
-    try { coords = await routeOSRM(a, b, D.route); }
+    try { coords = await routeLeg(a, b, D.route); }
     catch (e) { coords = [[a.lng, a.lat], [b.lng, b.lat]]; D.warn = 'No se encontró camino entre dos puntos; ese tramo va en línea recta.'; }
   }
   if (D.legReq[i] !== req) return;
