@@ -38,7 +38,8 @@ El service worker solo se registra al servir la app por http(s); abriendo `index
 
 ## Despliegue
 
-Conectado a Vercel: cada `git push` a `main` publica una versión nueva.
+Conectado a Vercel: cada `git push` a `main` publica una versión nueva de la web.
+La app Android se compila en local: ver [LEEME-ANDROID.md](LEEME-ANDROID.md).
 Al cambiar la app, sube el número de `VERSION` en `sw.js` para que los móviles con la app instalada reciban la actualización.
 
 ## Datos y créditos

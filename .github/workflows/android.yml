@@ -1,7 +1,8 @@
-name: APK Android
+name: Comprobar Android
 
-# Compila el APK en cada cambio de la app y lo publica en Releases
-# (https://github.com/viferor/visor-pendientes-3d/releases/latest).
+# Comprueba que el proyecto Android compila en cada cambio.
+# No publica nada: el APK firmado se genera en local con scripts/compilar-apk.bat,
+# porque la clave de firma solo existe en el ordenador del autor.
 on:
   push:
     branches: [main]
@@ -18,10 +19,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: apk-android
+  group: android-check
   cancel-in-progress: true
 
 jobs:
@@ -69,7 +70,7 @@ jobs:
           ./gradlew assembleRelease --no-daemon --stacktrace \
             -PversionCode=${{ steps.ver.outputs.code }} \
             -PversionName=${{ steps.ver.outputs.name }} 2>&1 | tee ../gradle.log
-          cp app/build/outputs/apk/release/app-release.apk "../Pendientes3D-${{ steps.ver.outputs.name }}.apk"
+          ls -la app/build/outputs/apk/release/
 
       - name: Mostrar el error de compilación
         if: failure()
@@ -78,20 +79,3 @@ jobs:
           [ -s err.txt ] || tail -40 gradle.log > err.txt
           echo "::error title=Gradle::$(sed -e 's/%/%25/g' err.txt | awk '{printf "%s%%0A", $0}')"
 
-      - name: Guardar como artefacto
-        uses: actions/upload-artifact@v4
-        with:
-          name: Pendientes3D-${{ steps.ver.outputs.name }}
-          path: Pendientes3D-*.apk
-
-      - name: Publicar en Releases
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.ver.outputs.name }}
-          name: Pendientes 3D ${{ steps.ver.outputs.name }}
-          body: |
-            APK para instalar en Android (7.0 o superior).
-            Descarga el archivo .apk desde el móvil y ábrelo. Si es la primera vez, Android pedirá permiso para instalar apps de esta fuente.
-            Commit: ${{ github.sha }}
-          files: Pendientes3D-*.apk
-          make_latest: true

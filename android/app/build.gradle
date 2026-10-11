@@ -17,14 +17,20 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
-    // Firma fija para que cada APK nuevo se instale encima del anterior.
-    // Es una clave de uso personal (sideload). Para Google Play conviene una clave privada en secretos.
+    // Firma: se lee de android/keystore.properties, que solo existe en tu ordenador
+    // (lo crea scripts/compilar-apk.bat y está excluido de Git). Sin ese archivo,
+    // el APK de release sale sin firmar (sirve solo para comprobar que compila).
+    def ksFile = rootProject.file('keystore.properties')
+    def ks = new Properties()
+    if (ksFile.exists()) { ksFile.withInputStream { ks.load(it) } }
     signingConfigs {
-        sideload {
-            storeFile file('pendientes3d.keystore')
-            storePassword 'pendientes3d'
-            keyAlias 'pendientes3d'
-            keyPassword 'pendientes3d'
+        if (ksFile.exists()) {
+            privada {
+                storeFile file(ks['storeFile'])
+                storePassword ks['storePassword']
+                keyAlias ks['keyAlias']
+                keyPassword ks['keyPassword']
+            }
         }
     }
     lint {
@@ -32,11 +38,8 @@ android {
         abortOnError = false
     }
     buildTypes {
-        debug {
-            signingConfig signingConfigs.sideload
-        }
         release {
-            signingConfig signingConfigs.sideload
+            if (ksFile.exists()) signingConfig signingConfigs.privada
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

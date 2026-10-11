@@ -3,3 +3,11 @@ Thumbs.db
 .vercel
 node_modules
 www/
+
+# Claves de firma: nunca al repo
+*.keystore
+*.jks
+keystore.properties
+# Compilación local
+Pendientes3D-*.apk
+compilar-apk.log
