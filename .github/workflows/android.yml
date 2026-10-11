@@ -64,11 +64,19 @@ jobs:
       - name: Compilar APK
         working-directory: android
         run: |
+          set -o pipefail
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon \
+          ./gradlew assembleRelease --no-daemon --stacktrace \
             -PversionCode=${{ steps.ver.outputs.code }} \
-            -PversionName=${{ steps.ver.outputs.name }}
+            -PversionName=${{ steps.ver.outputs.name }} 2>&1 | tee ../gradle.log
           cp app/build/outputs/apk/release/app-release.apk "../Pendientes3D-${{ steps.ver.outputs.name }}.apk"
+
+      - name: Mostrar el error de compilación
+        if: failure()
+        run: |
+          grep -n -A8 -E "What went wrong|^e: |error:" gradle.log | head -60 > err.txt || true
+          [ -s err.txt ] || tail -40 gradle.log > err.txt
+          echo "::error title=Gradle::$(sed -e 's/%/%25/g' err.txt | awk '{printf "%s%%0A", $0}')"
 
       - name: Guardar como artefacto
         uses: actions/upload-artifact@v4

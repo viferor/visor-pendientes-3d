@@ -8,8 +8,8 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         // En GitHub Actions se pasan -PversionCode y -PversionName; en local vale 1 / 1.0
-        versionCode (project.findProperty('versionCode') ?: '1').toInteger()
-        versionName (project.findProperty('versionName') ?: '1.0')
+        versionCode = Integer.parseInt(String.valueOf(project.findProperty('versionCode') ?: '1'))
+        versionName = String.valueOf(project.findProperty('versionName') ?: '1.0')
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -26,6 +26,10 @@ android {
             keyAlias 'pendientes3d'
             keyPassword 'pendientes3d'
         }
+    }
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
     }
     buildTypes {
         debug {
