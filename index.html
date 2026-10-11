@@ -116,6 +116,27 @@ input[type=range]{accent-color:var(--paint)}
 .wp.end{background:#ec4b36;width:20px;height:20px}
 body.drawing #map canvas{cursor:crosshair}
 
+/* Reproductor y datos del momento */
+#player{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(var(--profile-h) + var(--safe-area-inset-bottom, env(safe-area-inset-bottom,0px)) + 30px);
+  z-index:4;display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--panel);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border:1px solid var(--line);border-radius:999px;width:min(460px, calc(100% - 24px))}
+#playBtn{flex:none;width:40px;height:40px;border-radius:50%;border:0;background:var(--paint);color:#1b1a0c;font:700 16px/1 var(--body);cursor:pointer}
+#playBtn:focus-visible{outline:2px solid #fff;outline-offset:2px}
+#playProgress{flex:1;min-width:60px;accent-color:var(--paint)}
+#player .seg{flex:none}
+#player .seg button{padding:6px 7px}
+#live{position:absolute;right:12px;top:calc(12px + var(--safe-area-inset-top, env(safe-area-inset-top,0px)) + 150px);z-index:3;
+  display:grid;grid-template-columns:repeat(2, auto);gap:8px 16px;padding:10px 14px;background:var(--panel);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid var(--line);border-radius:10px;font-variant-numeric:tabular-nums}
+#live b{display:block;font:700 22px/1 var(--display)}
+#live small{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-top:2px}
+@media (max-width:640px){
+  #live{top:auto;right:8px;left:8px;bottom:calc(var(--profile-h) + var(--safe-area-inset-bottom, env(safe-area-inset-bottom,0px)) + 88px);
+    grid-template-columns:repeat(auto-fill, minmax(64px, 1fr));gap:6px 10px;padding:8px 10px}
+  #live b{font-size:18px}
+  body.playing #panel{display:none}
+}
+
 #drop{position:absolute;inset:0;z-index:10;display:grid;place-items:center;background:rgba(13,18,16,.7);
   border:3px dashed var(--paint);font:700 32px var(--display);text-transform:uppercase;color:var(--paint)}
 
@@ -246,6 +267,18 @@ body.drawing #map canvas{cursor:crosshair}
     <div id="tip" hidden></div>
   </div>
 </section>
+
+<div id="player" hidden>
+  <button type="button" id="playBtn" aria-label="Reproducir">▶</button>
+  <input type="range" id="playProgress" min="0" max="1000" value="0" aria-label="Posición en la ruta">
+  <div class="seg" role="group" aria-label="Velocidad de reproducción">
+    <button type="button" data-speed="1" aria-pressed="true">1x</button>
+    <button type="button" data-speed="2" aria-pressed="false">2x</button>
+    <button type="button" data-speed="3" aria-pressed="false">3x</button>
+    <button type="button" data-speed="5" aria-pressed="false">5x</button>
+  </div>
+</div>
+<div id="live" hidden aria-live="off"></div>
 
 <div id="drop" hidden>Suelta el GPX aquí</div>
 
@@ -421,7 +454,19 @@ function parseGPX(text) {
     const ele = e ? parseFloat(e.textContent) : NaN;
     const prev = pts[pts.length - 1];
     if (prev && haversine(prev, { lat, lon }) < 0.5) continue;
-    pts.push({ lat, lon, ele });
+    const tm = [...p.children].find(c => c.localName === 'time');
+    const t = tm ? Date.parse(tm.textContent) : NaN;
+    // Datos de sensores (Garmin/Strava/Wahoo): hr, cad, power, atemp, en cualquier espacio de nombres
+    const sens = { hr: NaN, cad: NaN, pw: NaN, temp: NaN };
+    for (const el of p.getElementsByTagName('*')) {
+      const k = el.localName.toLowerCase(), v = parseFloat(el.textContent);
+      if (!isFinite(v) || el.children.length) continue;
+      if (k === 'hr' || k === 'heartrate') sens.hr = v;
+      else if (k === 'cad' || k === 'cadence') sens.cad = v;
+      else if (k === 'power' || k === 'watts' || k === 'pwr') sens.pw = v;
+      else if (k === 'atemp' || k === 'temp' || k === 'temperature') sens.temp = v;
+    }
+    pts.push({ lat, lon, ele, t, ...sens });
   }
   if (pts.length < 2) throw new Error('El GPX tiene menos de dos puntos útiles.');
   return { name, pts };
@@ -540,7 +585,7 @@ function buildSegments(pts, L) {
 
 async function analyze() {
   const rawRef = S.raw, raw = rawRef.pts;
-  const pts = raw.map(p => ({ lat: p.lat, lon: p.lon, d: 0, e0: p.ele, e: 0 }));
+  const pts = raw.map(p => ({ lat: p.lat, lon: p.lon, d: 0, e0: p.ele, e: 0, t: p.t, hr: p.hr, cad: p.cad, pw: p.pw, temp: p.temp }));
   for (let i = 1; i < pts.length; i++) pts[i].d = pts[i - 1].d + haversine(pts[i - 1], pts[i]);
   const total = pts[pts.length - 1].d;
 
@@ -577,6 +622,7 @@ async function analyze() {
   pts.forEach((p, i) => p.e = sm[i]);
   $('seglen').options[0].textContent = `Automático (${auto >= 1000 ? auto / 1000 + ' km' : auto + ' m'})`;
 
+  computeTimeData(pts);
   if (!S.pts || S.pts.length !== pts.length) S.sel = null;
   S.pts = pts;
   S.segs = buildSegments(pts, S.L);
@@ -586,11 +632,47 @@ async function analyze() {
   return true;
 }
 
+/* ---------- Datos de tiempo y sensores ---------- */
+// S.hasTime: el GPX trae hora en (casi) todos los puntos. Se calcula:
+//  - p.mt: tiempo en movimiento acumulado (las paradas de más de 10 s cuentan 10 s)
+//  - p.v: velocidad en km/h, media de ±5 s; p.pw3: potencia media de 3 s
+function computeTimeData(pts) {
+  const n = pts.length, withT = pts.filter(p => isFinite(p.t)).length;
+  S.hasTime = withT >= n * 0.9 && pts[n - 1].t > pts[0].t;
+  S.sensors = {
+    hr: pts.some(p => isFinite(p.hr)), cad: pts.some(p => isFinite(p.cad)),
+    pw: pts.some(p => isFinite(p.pw)), temp: pts.some(p => isFinite(p.temp))
+  };
+  if (!S.hasTime) { pts.forEach(p => { p.mt = NaN; p.v = NaN; p.pw3 = p.pw; }); return; }
+  let last = pts[0].t;
+  pts[0].mt = 0;
+  for (let i = 1; i < n; i++) {
+    const t = isFinite(pts[i].t) ? pts[i].t : last + 1000;
+    pts[i].mt = pts[i - 1].mt + Math.min(Math.max(t - last, 0), 10000) / 1000;
+    last = t;
+  }
+  for (let i = 0, a = 0, b = 0; i < n; i++) {
+    while (pts[i].mt - pts[a].mt > 5) a++;
+    while (b < n - 1 && pts[b + 1].mt - pts[i].mt <= 5) b++;
+    const dt = pts[b].mt - pts[a].mt;
+    pts[i].v = dt > 0 ? (pts[b].d - pts[a].d) / dt * 3.6 : 0;
+  }
+  for (let i = 0, a = 0, sum = 0, c = 0; i < n; i++) {
+    if (isFinite(pts[i].pw)) { sum += pts[i].pw; c++; }
+    while (pts[i].mt - pts[a].mt > 3) { if (isFinite(pts[a].pw)) { sum -= pts[a].pw; c--; } a++; }
+    pts[i].pw3 = c ? sum / c : NaN;
+  }
+}
+const fmtTime = s => { s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), ss = s % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(ss).padStart(2, '0'); };
+function avgOf(pts, k) { let s = 0, c = 0; for (const p of pts) if (isFinite(p[k]) && (k !== 'cad' || p[k] > 0)) { s += p[k]; c++; } return c ? s / c : NaN; }
+
 /* ---------- Pintado ---------- */
 function clearTrack() {
   S.pts = S.segs = null; S.sel = null;
   if (map.getSource('route')) map.getSource('route').setData(empty);
   if (map.getSource('arrows')) map.getSource('arrows').setData(empty);
+  PLAY.x = 0; showPlayer();
   clearLabels();
   $('stats').innerHTML = '';
   hoverOut();
@@ -634,12 +716,20 @@ function render() {
     [fmtInt(min) + ' m', 'Alt. mín.'],
     [fmtGrade(gmax), `Pend. máx. ${RW} m`],
   ];
+  if (S.hasTime) {
+    const mt = pts[pts.length - 1].mt;
+    stats.push([fmtTime(mt), 'En movimiento'], [(total / mt * 3.6).toFixed(1).replace('.', ',') + ' km/h', 'Vel. media']);
+    if (S.sensors.hr) stats.push([fmtInt(avgOf(pts, 'hr')) + ' ppm', 'FC media']);
+    if (S.sensors.pw) stats.push([fmtInt(avgOf(pts, 'pw')) + ' W', 'Potencia media']);
+    if (S.sensors.cad) stats.push([fmtInt(avgOf(pts, 'cad')) + ' rpm', 'Cadencia media']);
+  }
   $('stats').innerHTML = stats.map(([v, l]) => `<div class="stat"><b>${v}</b><small>${l}</small></div>`).join('');
 
   clearLabels();
   updateLabels();
   drawProfile();
   updateExportButtons();
+  showPlayer();
 }
 
 /* Flechas cada 5 km (cada 1 km en rutas de menos de 15 km), giradas en el sentido de la marcha */
@@ -703,7 +793,10 @@ function updateLabels() {
     S.labels.set(i, new maplibregl.Marker({ element: el, anchor: 'bottom', offset: [0, -6] }).setLngLat(g.mid).addTo(map));
   }
 }
-map.on('moveend', updateLabels);
+map.on('moveend', () => {
+  if (PLAY.on) { const t = performance.now(); if (t - PLAY.labelsAt < 700) return; PLAY.labelsAt = t; }
+  updateLabels();
+});
 
 /* ---------- Perfil ---------- */
 const base = $('base'), over = $('overlay'), tip = $('tip');
@@ -782,14 +875,25 @@ function idxFromX(clientX) {
   return idxAt((x - P.pad.l) / P.W * P.total);
 }
 function drawMarker(i) {
-  if (!S.pts || !P || i == null) return null;
+  if (!S.pts || i == null) return null;
+  if (!P || $('profile').hidden) {
+    const q = S.pts[i];
+    if (map.getSource('hover')) map.getSource('hover').setData({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [q.lon, q.lat] } });
+    updateLive(i);
+    return q;
+  }
   const p = S.pts[i], g = segAt(i);
   const { ctx, w } = sizeCanvas(over);
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(P.X(p.d) + 0.5, P.pad.t); ctx.lineTo(P.X(p.d) + 0.5, P.pad.t + P.H); ctx.stroke();
   ctx.beginPath(); ctx.arc(P.X(p.d), P.Y(p.e), 4.5, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
   tip.hidden = false;
-  tip.innerHTML = `km <b>${(p.d / 1000).toFixed(2)}</b> · <b>${fmtInt(p.e)}</b> m · <b style="color:${g.color}">${fmtGrade(g.g)}</b>`;
+  let extra = '';
+  if (S.hasTime) extra += ` · <b>${p.v.toFixed(1).replace('.', ',')}</b> km/h`;
+  if (isFinite(p.hr)) extra += ` · <b>${fmtInt(p.hr)}</b> ppm`;
+  if (isFinite(p.pw3)) extra += ` · <b>${fmtInt(p.pw3)}</b> W`;
+  tip.innerHTML = `km <b>${(p.d / 1000).toFixed(2)}</b> · <b>${fmtInt(p.e)}</b> m · <b style="color:${g.color}">${fmtGrade(g.g)}</b>${extra}`;
+  updateLive(i);
   const tw = tip.offsetWidth, tx = P.X(p.d);
   tip.style.left = Math.min(Math.max(tx - tw / 2, 4), w - tw - 4) + 'px';
   if (map.getSource('hover')) map.getSource('hover').setData({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [p.lon, p.lat] } });
@@ -804,13 +908,14 @@ function hoverOut() {
   tip.hidden = true;
   if (!$('profile').hidden) sizeCanvas(over);
   if (map.getSource('hover')) map.getSource('hover').setData(empty);
+  if (!PLAY.on) $('live').hidden = true;
 }
 function clearSelection() { S.sel = null; hoverOut(); }
 
 // Rumbo de la marcha en el punto i (de 80 m antes a 200 m después)
 function headingAt(i) {
   const pts = S.pts, d = pts[i].d;
-  const a = pts[idxAt(Math.max(0, d - 80))], b = pts[idxAt(Math.min(P.total, d + 200))];
+  const a = pts[idxAt(Math.max(0, d - 80))], b = pts[idxAt(Math.min(pts[pts.length - 1].d, d + 200))];
   if (a === b) return map.getBearing();
   const toR = Math.PI / 180, y = Math.sin((b.lon - a.lon) * toR) * Math.cos(b.lat * toR);
   const x = Math.cos(a.lat * toR) * Math.sin(b.lat * toR) - Math.sin(a.lat * toR) * Math.cos(b.lat * toR) * Math.cos((b.lon - a.lon) * toR);
@@ -835,6 +940,7 @@ function selectAt(clientX, quick) {
   if (!S.pts || !P) return;
   S.sel = idxFromX(clientX);
   drawMarker(S.sel);
+  if (S.pts) { PLAY.x = axisOf(S.pts[S.sel]); $('playProgress').value = PLAY.x / playAxis() * 1000; }
   flyToIdx(S.sel, quick);
 }
 over.addEventListener('pointerdown', e => {
@@ -854,6 +960,96 @@ const endDrag = e => { dragging = false; try { over.releasePointerCapture(e.poin
 over.addEventListener('pointerup', endDrag);
 over.addEventListener('pointercancel', endDrag);
 over.addEventListener('pointerleave', () => { if (!dragging) hoverOut(); });
+
+/* ---------- Reproductor (vuelo tipo Strava) ---------- */
+// 1x = la ruta entera en unos 2 minutos. Con hora en el GPX avanza según el tiempo en movimiento
+// (más despacio en las subidas); sin hora, según la distancia.
+const PLAY = { on: false, x: 0, speed: 1, last: 0, brg: null, labelsAt: 0 };
+const BASE_SECONDS = 120;
+function playAxis() { const q = S.pts[S.pts.length - 1]; return S.hasTime ? q.mt : q.d; }
+function axisOf(p) { return S.hasTime ? p.mt : p.d; }
+function idxAtAxis(x) {
+  if (!S.hasTime) return idxAt(x);
+  let a = 0, b = S.pts.length - 1;
+  while (b - a > 1) { const m = (a + b) >> 1; S.pts[m].mt < x ? a = m : b = m; }
+  return a;
+}
+function angleDiff(a, b) { return ((b - a + 540) % 360) - 180; }
+
+function updateLive(i) {
+  const box = $('live');
+  if (!S.pts || i == null) { box.hidden = true; return; }
+  const p = S.pts[i], g = segAt(i), items = [];
+  items.push(['km', (p.d / 1000).toFixed(2).replace('.', ',')]);
+  if (S.hasTime) items.push(['tiempo', fmtTime(p.mt)], ['km/h', p.v.toFixed(1).replace('.', ',')]);
+  items.push(['pend.', fmtGrade(g.g), g.color], ['alt. m', fmtInt(p.e)]);
+  if (isFinite(p.hr)) items.push(['ppm', fmtInt(p.hr)]);
+  if (isFinite(p.pw3)) items.push(['W', fmtInt(p.pw3)]);
+  if (isFinite(p.cad)) items.push(['rpm', fmtInt(p.cad)]);
+  if (isFinite(p.temp)) items.push(['°C', fmtInt(p.temp)]);
+  box.innerHTML = items.map(([k, v, c]) => `<div><b${c ? ` style="color:${c}"` : ''}>${v}</b><small>${k}</small></div>`).join('');
+  box.hidden = !(PLAY.on || $('player').dataset.shown === '1');
+}
+
+function playFrame(now) {
+  if (!PLAY.on) return;
+  const dt = Math.min(0.1, (now - PLAY.last) / 1000); PLAY.last = now;
+  const end = playAxis();
+  PLAY.x = Math.min(end, PLAY.x + end / BASE_SECONDS * PLAY.speed * dt);
+  const i = idxAtAxis(PLAY.x), j = Math.min(i + 1, S.pts.length - 1), a = S.pts[i], b = S.pts[j];
+  const span = axisOf(b) - axisOf(a), f = span > 0 ? Math.min(1, (PLAY.x - axisOf(a)) / span) : 0;
+  const lon = a.lon + (b.lon - a.lon) * f, lat = a.lat + (b.lat - a.lat) * f;
+  S.sel = i;
+  drawMarker(i);
+  if (map.getSource('hover')) map.getSource('hover').setData({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [lon, lat] } });
+  const target = headingAt(i);
+  PLAY.brg = PLAY.brg == null ? target : PLAY.brg + angleDiff(PLAY.brg, target) * Math.min(1, dt * 1.2);
+  PLAY.moving = true;
+  map.jumpTo({ center: [lon, lat], bearing: PLAY.brg });
+  PLAY.moving = false;
+  $('playProgress').value = PLAY.x / end * 1000;
+  if (PLAY.x >= end) { pausePlay(true); return; }
+  requestAnimationFrame(playFrame);
+}
+function startPlay() {
+  if (!S.pts) return;
+  if (PLAY.x >= playAxis() - 1e-6) PLAY.x = 0;
+  if (S.sel != null && !PLAY.x) PLAY.x = axisOf(S.pts[S.sel]);
+  PLAY.on = true; PLAY.brg = null; PLAY.last = performance.now();
+  document.body.classList.add('playing');
+  $('playBtn').textContent = '❚❚'; $('playBtn').setAttribute('aria-label', 'Pausa');
+  $('live').hidden = false;
+  map.easeTo({ pitch: 65, zoom: Math.max(map.getZoom(), 15), duration: 800 });
+  setTimeout(() => { if (PLAY.on) { PLAY.last = performance.now(); requestAnimationFrame(playFrame); } }, 820);
+}
+function pausePlay(ended) {
+  PLAY.on = false;
+  document.body.classList.remove('playing');
+  $('playBtn').textContent = ended ? '↺' : '▶';
+  $('playBtn').setAttribute('aria-label', ended ? 'Volver a reproducir' : 'Reproducir');
+  updateLabels();
+}
+function showPlayer() {
+  const ok = !!S.pts && !D.active;
+  $('player').hidden = !ok;
+  $('player').dataset.shown = ok ? '1' : '0';
+  if (!ok) { if (PLAY.on) pausePlay(); $('live').hidden = true; }
+}
+$('playBtn').addEventListener('click', () => PLAY.on ? pausePlay() : startPlay());
+document.querySelectorAll('[data-speed]').forEach(b => b.addEventListener('click', () => {
+  PLAY.speed = +b.dataset.speed;
+  document.querySelectorAll('[data-speed]').forEach(x => x.setAttribute('aria-pressed', x === b));
+}));
+$('playProgress').addEventListener('input', e => {
+  if (!S.pts) return;
+  PLAY.x = e.target.value / 1000 * playAxis();
+  const i = idxAtAxis(PLAY.x); S.sel = i; drawMarker(i);
+  if (!PLAY.on) { const q = S.pts[i]; map.jumpTo({ center: [q.lon, q.lat], bearing: headingAt(i) }); }
+});
+// Si mueves el mapa o tocas el perfil durante la reproducción, se pausa
+for (const ev of ['dragstart', 'rotatestart', 'pitchstart', 'zoomstart'])
+  map.on(ev, e => { if (PLAY.on && e.originalEvent) pausePlay(); });
+over.addEventListener('pointerdown', () => { if (PLAY.on) pausePlay(); }, true);
 
 /* ---------- Cámara ---------- */
 function fitRoute(animate = true) {
@@ -1005,6 +1201,7 @@ function endDraw(keep = true) {
   D.wps = []; D.legs = [];
   document.body.classList.remove('drawing');
   $('viewTools').hidden = false; $('drawTools').hidden = true;
+  showPlayer();
   if (keep && S.pts) {
     S.name = $('routeName').value.trim() || 'Mi ruta';
     $('trackName').textContent = S.name;
