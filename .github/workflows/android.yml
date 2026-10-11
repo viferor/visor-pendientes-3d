@@ -1,0 +1,84 @@
+name: APK Android
+
+# Compila el APK en cada cambio de la app y lo publica en Releases
+# (https://github.com/viferor/visor-pendientes-3d/releases/latest).
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - 'lib/**'
+      - 'icons/**'
+      - 'android/**'
+      - 'capacitor.config.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk-android
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Copiar la web al proyecto Android
+        run: npm run android:sync
+
+      - name: Versión
+        id: ver
+        run: |
+          NAME="$(node -p "require('./package.json').version").${{ github.run_number }}"
+          echo "code=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Compilar APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon \
+            -PversionCode=${{ steps.ver.outputs.code }} \
+            -PversionName=${{ steps.ver.outputs.name }}
+          cp app/build/outputs/apk/release/app-release.apk "../Pendientes3D-${{ steps.ver.outputs.name }}.apk"
+
+      - name: Guardar como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pendientes3D-${{ steps.ver.outputs.name }}
+          path: Pendientes3D-*.apk
+
+      - name: Publicar en Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.name }}
+          name: Pendientes 3D ${{ steps.ver.outputs.name }}
+          body: |
+            APK para instalar en Android (7.0 o superior).
+            Descarga el archivo .apk desde el móvil y ábrelo. Si es la primera vez, Android pedirá permiso para instalar apps de esta fuente.
+            Commit: ${{ github.sha }}
+          files: Pendientes3D-*.apk
+          make_latest: true

@@ -1,0 +1,13 @@
+{
+  "appId": "com.viferor.pendientes3d",
+  "appName": "Pendientes 3D",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#0d1210"
+  },
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "css"
+    }
+  }
+}

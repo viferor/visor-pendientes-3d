@@ -40,8 +40,8 @@ body.no-profile{--profile-h:0px}
 #map{position:absolute;inset:0}
 
 /* Panel */
-#panel{position:absolute;top:calc(12px + env(safe-area-inset-top,0px));left:calc(12px + env(safe-area-inset-left,0px));width:316px;
-  max-height:calc(100% - var(--profile-h) - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px) - 36px);
+#panel{position:absolute;top:calc(12px + var(--safe-area-inset-top, env(safe-area-inset-top,0px)));left:calc(12px + var(--safe-area-inset-left, env(safe-area-inset-left,0px)));width:316px;
+  max-height:calc(100% - var(--profile-h) - var(--safe-area-inset-top, env(safe-area-inset-top,0px)) - var(--safe-area-inset-bottom, env(safe-area-inset-bottom,0px)) - 36px);
   display:flex;flex-direction:column;background:var(--panel);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
   border:1px solid var(--line);border-radius:10px;z-index:3;overflow:hidden}
 #panel header{display:flex;align-items:center;gap:10px;padding:12px 14px 10px;border-bottom:1px solid var(--line)}
@@ -95,8 +95,8 @@ input[type=range]{accent-color:var(--paint)}
 .hint{font-size:12px;color:var(--muted);margin:0}
 
 /* Perfil */
-#profile{position:absolute;left:0;right:0;bottom:0;height:calc(var(--profile-h) + env(safe-area-inset-bottom,0px));
-  padding-bottom:env(safe-area-inset-bottom,0px);background:rgba(13,18,16,var(--profile-alpha));
+#profile{position:absolute;left:0;right:0;bottom:0;height:calc(var(--profile-h) + var(--safe-area-inset-bottom, env(safe-area-inset-bottom,0px)));
+  padding-bottom:var(--safe-area-inset-bottom, env(safe-area-inset-bottom,0px));background:rgba(13,18,16,var(--profile-alpha));
   border-top:1px solid rgba(238,243,238,calc(var(--profile-alpha) * .16));z-index:2}
 #profile .wrap{position:relative;height:100%}
 #profile canvas{position:absolute;inset:0;width:100%;height:100%}
@@ -120,11 +120,12 @@ body.drawing #map canvas{cursor:crosshair}
   border:3px dashed var(--paint);font:700 32px var(--display);text-transform:uppercase;color:var(--paint)}
 
 .maplibregl-ctrl-attrib{font-size:10px}
-.maplibregl-ctrl-bottom-right,.maplibregl-ctrl-bottom-left{bottom:calc(var(--profile-h) + env(safe-area-inset-bottom,0px))}
-.maplibregl-ctrl-top-right{top:env(safe-area-inset-top,0px);right:env(safe-area-inset-right,0px)}
+.maplibregl-ctrl-bottom-right,.maplibregl-ctrl-bottom-left{bottom:calc(var(--profile-h) + var(--safe-area-inset-bottom, env(safe-area-inset-bottom,0px)))}
+.maplibregl-ctrl-top-right{top:var(--safe-area-inset-top, env(safe-area-inset-top,0px));right:var(--safe-area-inset-right, env(safe-area-inset-right,0px))}
 
 @media (max-width:640px){
   :root{--profile-h:130px}
+  body.drawing .legend, body.drawing #settings, body.drawing #body > .hint, body.drawing #drawTools > .hint{display:none}
   #panel{width:auto;right:60px}
   .stat b{font-size:19px}
 }
@@ -233,6 +234,14 @@ body.drawing #map canvas{cursor:crosshair}
 "use strict";
 const $ = id => document.getElementById(id);
 
+/* ---------- App Android (Capacitor) ---------- */
+const NATIVE = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+const plugin = name => NATIVE ? ((window.Capacitor.Plugins && window.Capacitor.Plugins[name]) || window.Capacitor.registerPlugin(name)) : null;
+if (NATIVE) {
+  document.documentElement.classList.add('native');
+  try { plugin('SystemBars').setStyle({ style: 'DARK' }); } catch (e) {}
+}
+
 /* ---------- Preferencias guardadas ---------- */
 const PREFS_KEY = 'pendientes3d.prefs';
 const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto' },
@@ -284,7 +293,27 @@ const map = new maplibregl.Map({
   center: [-3.38, 37.075], zoom: 12.5, pitch: 62, bearing: -30, maxPitch: 85
 });
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
-map.addControl(new maplibregl.FullscreenControl({ container: document.body }), 'top-right');
+class NativeFullscreen {
+  onAdd() {
+    this.box = document.createElement('div');
+    this.box.className = 'maplibregl-ctrl maplibregl-ctrl-group';
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'maplibregl-ctrl-fullscreen'; b.title = 'Pantalla completa';
+    b.innerHTML = '<span class="maplibregl-ctrl-icon" aria-hidden="true"></span>';
+    let on = false;
+    b.addEventListener('click', async () => {
+      on = !on;
+      try { await plugin('SystemBars')[on ? 'hide' : 'show'](); } catch (e) {}
+      b.className = on ? 'maplibregl-ctrl-shrink' : 'maplibregl-ctrl-fullscreen';
+      b.title = on ? 'Salir de pantalla completa' : 'Pantalla completa';
+      setTimeout(() => { map.resize(); drawProfile(); }, 300);
+    });
+    this.box.appendChild(b);
+    return this.box;
+  }
+  onRemove() { this.box.remove(); }
+}
+map.addControl(NATIVE ? new NativeFullscreen() : new maplibregl.FullscreenControl({ container: document.body }), 'top-right');
 map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
 
 const empty = { type: 'FeatureCollection', features: [] };
@@ -827,14 +856,37 @@ function updateExportButtons() {
   $('exportGpx').disabled = !ok;
   $('shareGpx').disabled = !ok;
 }
-const canShareFiles = (() => {
+const canShareFiles = NATIVE || (() => {
   try { return !!(navigator.canShare && navigator.canShare({ files: [new File(['x'], 'x.gpx', { type: 'application/gpx+xml' })] })); }
   catch (e) { return false; }
 })();
 $('shareGpx').hidden = !canShareFiles;
 
-$('exportGpx').addEventListener('click', () => {
+// En Android: guarda en Documentos/Pendientes3D, o comparte si no se puede escribir allí
+async function nativeWrite(f, dir) {
+  const FS = plugin('Filesystem');
+  const data = await f.text();
+  const path = dir === 'CACHE' ? f.name : 'Pendientes3D/' + f.name;
+  await FS.writeFile({ path, data, directory: dir, encoding: 'utf8', recursive: true });
+  return (await FS.getUri({ path, directory: dir })).uri;
+}
+async function nativeShare(f) {
+  const uri = await nativeWrite(f, 'CACHE');
+  await plugin('Share').share({ title: f.name, files: [uri], dialogTitle: 'Enviar GPX a…' });
+}
+$('exportGpx').addEventListener('click', async () => {
   if (!S.pts) return;
+  if (NATIVE) {
+    const f = gpxFile();
+    try {
+      try { const FS = plugin('Filesystem'); const st = await FS.checkPermissions(); if (st.publicStorage !== 'granted') await FS.requestPermissions(); } catch (e) {}
+      await nativeWrite(f, 'DOCUMENTS');
+      setStatus(`Guardado en Documentos/Pendientes3D/${f.name}`);
+    } catch (e) {
+      try { await nativeShare(f); } catch (e2) { if (!/cancel/i.test(String(e2 && e2.message))) setStatus('No se pudo guardar el GPX.', true); }
+    }
+    return;
+  }
   const f = gpxFile(), url = URL.createObjectURL(f);
   const a = document.createElement('a');
   a.href = url; a.download = f.name; document.body.appendChild(a); a.click(); a.remove();
@@ -844,8 +896,8 @@ $('exportGpx').addEventListener('click', () => {
 $('shareGpx').addEventListener('click', async () => {
   if (!S.pts) return;
   const f = gpxFile();
-  try { await navigator.share({ files: [f], title: f.name }); }
-  catch (e) { if (e.name !== 'AbortError') setStatus('No se pudo compartir el archivo. Usa «Descargar GPX».', true); }
+  try { NATIVE ? await nativeShare(f) : await navigator.share({ files: [f], title: f.name }); }
+  catch (e) { if (e.name !== 'AbortError' && !/cancel/i.test(String(e && e.message))) setStatus('No se pudo compartir el archivo. Usa «Descargar GPX».', true); }
 });
 $('startDraw').addEventListener('click', startDraw);
 $('endDraw').addEventListener('click', () => endDraw(true));
@@ -917,7 +969,12 @@ let rz; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTime
 document.addEventListener('fullscreenchange', () => setTimeout(() => { map.resize(); drawProfile(); }, 150));
 
 /* ---------- PWA ---------- */
-if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+if (NATIVE) {
+  $('file').removeAttribute('accept');
+  $('exportGpx').textContent = 'Guardar GPX';
+  document.querySelector('#body .hint:last-child').textContent = 'Arrastra con dos dedos para girar e inclinar la vista.';
+}
+if (!NATIVE && 'serviceWorker' in navigator && location.protocol.startsWith('http')) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
 }
 let installEvt = null;
