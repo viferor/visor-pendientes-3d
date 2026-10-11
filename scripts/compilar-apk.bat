@@ -102,7 +102,9 @@ if errorlevel 1 (
     if errorlevel 1 exit /b 1
   )
   echo Copiando la web al proyecto Android...
-  call npm run android:sync
+  node scripts\copy-www.mjs
+  if errorlevel 1 exit /b 1
+  node node_modules\@capacitor\cli\bin\capacitor sync android
   if errorlevel 1 exit /b 1
 )
 
