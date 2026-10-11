@@ -186,6 +186,8 @@ body.drawing #map canvas{cursor:crosshair}
         <label for="seglen">Tramo</label>
         <select id="seglen">
           <option value="auto">Automático</option>
+          <option value="10">10 m</option>
+          <option value="15">15 m</option>
           <option value="25">25 m</option>
           <option value="50">50 m</option>
           <option value="100">100 m</option>
@@ -530,7 +532,8 @@ async function analyze() {
   S.L = $('seglen').value === 'auto' ? auto : +$('seglen').value;
 
   // Suavizado proporcional al tramo: quita el ruido sin borrar las rampas cortas
-  const W = S.mode === 'terrain' ? Math.max(20, Math.min(40, S.L * 0.5)) : Math.max(12, Math.min(40, S.L * 0.4));
+  // Con tramos de 10-15 m el suavizado baja a 4-6 m para no borrar los repechos (solo tiene sentido con altitud del GPX)
+  const W = S.mode === 'terrain' ? Math.max(20, Math.min(40, S.L * 0.5)) : Math.max(4, Math.min(40, S.L * 0.4));
   const sm = smooth(pts, W);
   pts.forEach((p, i) => p.e = sm[i]);
   $('seglen').options[0].textContent = `Automático (${auto >= 1000 ? auto / 1000 + ' km' : auto + ' m'})`;
@@ -539,7 +542,8 @@ async function analyze() {
   S.pts = pts;
   S.segs = buildSegments(pts, S.L);
   render();
-  setStatus(`Altitud ${S.mode === 'terrain' ? 'del modelo de terreno' : 'del GPX'} · tramos de ${S.L} m`);
+  setStatus(`Altitud ${S.mode === 'terrain' ? 'del modelo de terreno' : 'del GPX'} · tramos de ${S.L} m` +
+    (S.mode === 'terrain' && S.L < 25 ? ' · el relieve no tiene detalle para tramos tan cortos; usa la altitud del GPX' : ''));
   return true;
 }
 
@@ -572,11 +576,12 @@ function render() {
     if (i) { const de = eg[i] - eg[i - 1]; de > 0 ? up += de : down -= de; }
     max = Math.max(max, eg[i]); min = Math.min(min, eg[i]);
   }
-  // Pendiente máxima: la rampa más dura en 50 m de recorrido, sea cual sea el tramo elegido
+  // Pendiente máxima: la rampa más dura en la longitud del tramo elegido (entre 10 y 50 m)
+  const RW = Math.max(10, Math.min(50, S.L));
   let gmax = -Infinity;
   for (let i = 0, j = 0; i < pts.length; i++) {
-    while (j < pts.length - 1 && pts[j].d - pts[i].d < 50) j++;
-    if (pts[j].d - pts[i].d >= 47) gmax = Math.max(gmax, (pts[j].e - pts[i].e) / (pts[j].d - pts[i].d) * 100);
+    while (j < pts.length - 1 && pts[j].d - pts[i].d < RW) j++;
+    if (pts[j].d - pts[i].d >= RW * 0.95) gmax = Math.max(gmax, (pts[j].e - pts[i].e) / (pts[j].d - pts[i].d) * 100);
   }
   if (!isFinite(gmax)) gmax = Math.max(...segs.map(g => g.g));
   const total = pts[pts.length - 1].d;
@@ -586,7 +591,7 @@ function render() {
     ['−' + fmtInt(down) + ' m', 'Desnivel −'],
     [fmtInt(max) + ' m', 'Alt. máx.'],
     [fmtInt(min) + ' m', 'Alt. mín.'],
-    [fmtGrade(gmax), 'Pend. máx.'],
+    [fmtGrade(gmax), `Pend. máx. ${RW} m`],
   ];
   $('stats').innerHTML = stats.map(([v, l]) => `<div class="stat"><b>${v}</b><small>${l}</small></div>`).join('');
 
