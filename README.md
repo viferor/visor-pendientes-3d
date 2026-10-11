@@ -49,6 +49,7 @@ Al cambiar la app, sube el número de `VERSION` en `sw.js` para que los móviles
 - Rutas MTB y de senderismo señalizadas: Waymarked Trails (CC BY-SA).
 - Pistas, sendas, nombres y cimas (capa vectorial): OpenFreeMap · © colaboradores de OpenStreetMap.
 - Parcelas catastrales y consulta de referencias: © Dirección General del Catastro (servicios WMS y de coordenadas, a través de Vercel).
+- Vías pecuarias y montes públicos de Andalucía: REDIAM, Junta de Andalucía (WMS, a través de Vercel).
 - Relieve: Terrain Tiles (Mapzen / AWS Open Data).
 - Cálculo de rutas: OSRM (servidor público de FOSSGIS) y BRouter (brouter.de) · datos © colaboradores de OpenStreetMap.
 - Mapa: MapLibre GL JS.

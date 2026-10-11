@@ -85,6 +85,7 @@ details.settings[open] summary{margin-bottom:10px}
 .cat-pop .warn{color:#f7a531;font-weight:600}
 .cat-pop .ldt,.cat-pop .ref{color:var(--muted);font-size:12px}
 .cat-pop a{color:var(--paint)}
+.cat-pop hr{border:0;border-top:1px solid var(--line);margin:6px 0}
 .offline-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
 .offline-list li{display:flex;align-items:center;gap:8px;font-size:13px;padding:6px 8px;border:1px solid var(--line);border-radius:6px}
 .offline-list li span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -303,6 +304,8 @@ body.layout .movable *{pointer-events:none}
           <label class="check"><input type="checkbox" id="ovMtb"> Rutas MTB señalizadas</label>
           <label class="check"><input type="checkbox" id="ovHike"> Rutas de senderismo (GR, PR, SL)</label>
           <label class="check"><input type="checkbox" id="ovCat"> Parcelas del Catastro</label>
+          <label class="check"><input type="checkbox" id="ovVvpp"> Vías pecuarias (Andalucía)</label>
+          <label class="check"><input type="checkbox" id="ovMontes"> Montes públicos (Andalucía)</label>
         </div>
         <label for="catAlpha" id="catAlphaLbl">Catastro</label>
         <input id="catAlpha" type="range" min="10" max="100" step="5" value="80" title="Opacidad de la capa del Catastro">
@@ -401,7 +404,9 @@ const PREFS_KEY = 'pendientes3d.prefs';
 const WMT = /\.vercel\.app$/.test(location.hostname) ? location.origin + '/wmt' : 'https://tile.waymarkedtrails.org';
 // Catastro (Dirección General del Catastro) también a través de Vercel, por el mismo motivo
 const CAT = /\.vercel\.app$/.test(location.hostname) ? location.origin + '/catastro' : 'https://ovc.catastro.meh.es';
-const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true, arrowStep: 'auto', playAlpha: 86, ovMtb: false, ovHike: false, ovLite: false, cyclosmAlpha: 100, ovNames: true, ovCat: false, catAlpha: 80 },
+// Servicios WMS de la REDIAM (Junta de Andalucía), también a través de Vercel
+const RED = /\.vercel\.app$/.test(location.hostname) ? location.origin + '/rediam' : 'https://www.juntadeandalucia.es/medioambiente/mapwms';
+const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true, arrowStep: 'auto', playAlpha: 86, ovMtb: false, ovHike: false, ovLite: false, cyclosmAlpha: 100, ovNames: true, ovCat: false, catAlpha: 80, ovVvpp: false, ovMontes: false },
   (() => { try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch (e) { return {}; } })());
 function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {} }
 
@@ -1966,20 +1971,102 @@ $('ovCat').addEventListener('change', e => {
 });
 $('catAlpha').addEventListener('input', e => { prefs.catAlpha = +e.target.value; savePrefs(); applyBasemap(); });
 
+/* ---------- Capas oficiales de la Junta (REDIAM): se leen sus capas del propio servicio ---------- */
+const WMSOV = {
+  ovVvpp:   { id: 'vvpp',   service: 'REDIAM_Inventario_VVPP',          label: 'Vía pecuaria (dominio público)', opacity: 0.85 },
+  ovMontes: { id: 'montes', service: 'REDIAM_Montes_Publicos_Andalucia', label: 'Monte público', opacity: 0.55 }
+};
+async function ensureWmsLayer(key) {
+  const o = WMSOV[key];
+  if (map.getLayer(o.id)) return true;
+  if (o.loading) return o.loading;
+  o.loading = (async () => {
+    try {
+      const r = await fetch(`${RED}/${o.service}?SERVICE=WMS&REQUEST=GetCapabilities&VERSION=1.1.1`);
+      const doc = new DOMParser().parseFromString(await r.text(), 'text/xml');
+      const srs = [...doc.getElementsByTagName('SRS'), ...doc.getElementsByTagName('CRS')].map(n => n.textContent.toUpperCase());
+      const all = srs.join(' ');
+      o.srs = /EPSG:3857/.test(all) ? 'EPSG:3857' : /EPSG:900913/.test(all) ? 'EPSG:900913' : 'EPSG:3857';
+      // capas finales (sin subcapas) que tengan nombre
+      o.layers = [...doc.getElementsByTagName('Layer')]
+        .filter(l => ![...l.children].some(c => c.localName === 'Layer'))
+        .map(l => { const n = [...l.children].find(c => c.localName === 'Name'); return n && n.textContent.trim(); })
+        .filter(Boolean);
+      o.queryable = [...doc.getElementsByTagName('Layer')]
+        .filter(l => l.getAttribute('queryable') === '1')
+        .map(l => { const n = [...l.children].find(c => c.localName === 'Name'); return n && n.textContent.trim(); })
+        .filter(Boolean);
+      if (!o.layers.length) throw new Error('sin capas');
+      map.addSource(o.id, { type: 'raster', tileSize: 512, minzoom: 9, maxzoom: 19,
+        attribution: 'Vías pecuarias y montes públicos: REDIAM, Junta de Andalucía',
+        tiles: [`${RED}/${o.service}?SERVICE=WMS&REQUEST=GetMap&VERSION=1.1.1&LAYERS=${encodeURIComponent(o.layers.join(','))}&STYLES=` +
+                `&SRS=${o.srs}&BBOX={bbox-epsg-3857}&WIDTH=512&HEIGHT=512&FORMAT=image/png&TRANSPARENT=TRUE`] });
+      map.addLayer({ id: o.id, type: 'raster', source: o.id, paint: { 'raster-opacity': o.opacity } }, map.getLayer('osmTracks') ? 'osmTracks' : undefined);
+      return true;
+    } catch (e) {
+      setStatus(`No se pudo cargar la capa «${o.label}» de la Junta. Inténtalo más tarde.`, true);
+      prefs[key] = false; savePrefs(); $(key).checked = false;
+      return false;
+    } finally { o.loading = null; }
+  })();
+  return o.loading;
+}
+async function applyWmsOverlays() {
+  for (const key in WMSOV) {
+    const o = WMSOV[key];
+    if (prefs[key] && !(await ensureWmsLayer(key))) continue;
+    if (map.getLayer(o.id)) map.setLayoutProperty(o.id, 'visibility', prefs[key] ? 'visible' : 'none');
+  }
+}
+for (const key in WMSOV) {
+  $(key).checked = prefs[key];
+  $(key).addEventListener('change', e => {
+    prefs[key] = e.target.checked; savePrefs(); applyWmsOverlays();
+    if (prefs[key]) setStatus('Toca el mapa para consultar qué hay en ese punto.');
+  });
+}
+mapReady.then(applyWmsOverlays);
+
+// Consulta de las capas de la Junta en un punto (GetFeatureInfo): devuelve texto breve o ''
+async function queryWms(key, ll) {
+  const o = WMSOV[key];
+  if (!prefs[key] || !o.layers) return '';
+  const ql = (o.queryable && o.queryable.length ? o.queryable : o.layers).join(',');
+  const R = 6378137, x = ll.lng * Math.PI / 180 * R, y = Math.log(Math.tan(Math.PI / 4 + ll.lat * Math.PI / 360)) * R;
+  const h = 25;   // ±25 m alrededor del punto tocado
+  const url = `${RED}/${o.service}?SERVICE=WMS&REQUEST=GetFeatureInfo&VERSION=1.1.1&LAYERS=${encodeURIComponent(ql)}&QUERY_LAYERS=${encodeURIComponent(ql)}` +
+    `&STYLES=&SRS=${o.srs}&BBOX=${x - h},${y - h},${x + h},${y + h}&WIDTH=51&HEIGHT=51&X=25&Y=25&INFO_FORMAT=text/plain&FEATURE_COUNT=3`;
+  try {
+    const t = await (await fetch(url)).text();
+    if (!t || /no (results|features)|search returned no results|not queryable/i.test(t) || !/=/.test(t)) return '';
+    // texto plano de MapServer: líneas «campo = 'valor'»; se muestran las más útiles
+    const lines = t.split(/\r?\n/).map(l => l.trim()).filter(l => /=/.test(l))
+      .map(l => l.replace(/^\s*([^=]+?)\s*=\s*'?(.*?)'?\s*$/, (m, k, v) => `${k}: ${v}`))
+      .filter(l => !/^(OBJECTID|FID|SHAPE|ID_|COD_|GEOM)/i.test(l) && !/: ?$/.test(l)).slice(0, 5);
+    return lines.length ? `<p class="ok">● ${o.label}</p><p class="ldt">${lines.map(l => l.replace(/</g, '&lt;')).join('<br>')}</p>` : '';
+  } catch (e) { return ''; }
+}
+
 /* ---------- Consulta de parcela del Catastro ---------- */
 // En rústico la referencia es: provincia(2) municipio(3) sección(1 letra) polígono(3) parcela(5).
 // Las parcelas 9000+ son de dominio público: caminos, arroyos, carreteras, vías pecuarias…
 let catPopup = null;
-async function queryCatastro(ll) {
-  const url = `${CAT}/ovcservweb/OVCSWLocalizacionRC/OVCCoordenadas.asmx/Consulta_RCCOOR?SRS=EPSG:4326&Coordenada_X=${ll.lng.toFixed(6)}&Coordenada_Y=${ll.lat.toFixed(6)}`;
+async function queryPoint(ll) {
   if (catPopup) catPopup.remove();
-  catPopup = new maplibregl.Popup({ closeButton: true, maxWidth: '280px', className: 'cat-pop' }).setLngLat(ll).setHTML('<p>Consultando el Catastro…</p>').addTo(map);
+  catPopup = new maplibregl.Popup({ closeButton: true, maxWidth: '280px', className: 'cat-pop' }).setLngLat(ll).setHTML('<p>Consultando…</p>').addTo(map);
+  const popup = catPopup;
+  const parts = await Promise.all([prefs.ovCat ? catastroHtml(ll) : '', queryWms('ovVvpp', ll), queryWms('ovMontes', ll)]);
+  const html = parts.filter(Boolean).join('<hr>');
+  if (popup === catPopup) popup.setHTML(html || '<p>Nada que mostrar en este punto.</p>');
+}
+async function catastroHtml(ll) {
+  const url = `${CAT}/ovcservweb/OVCSWLocalizacionRC/OVCCoordenadas.asmx/Consulta_RCCOOR?SRS=EPSG:4326&Coordenada_X=${ll.lng.toFixed(6)}&Coordenada_Y=${ll.lat.toFixed(6)}`;
   try {
     const r = await fetch(url);
     const doc = new DOMParser().parseFromString(await r.text(), 'text/xml');
     const t = tag => { const n = doc.getElementsByTagName(tag)[0]; return n ? n.textContent.trim() : ''; };
     const rc = t('pc1') + t('pc2'), ldt = t('ldt'), err = t('des');
-    if (!rc) { catPopup.setHTML(`<p>${err || 'No hay parcela catastral en este punto.'}</p>`); return; }
+    if (!rc) return `<p>${err || 'No hay parcela catastral en este punto.'}</p>`;
     let html = `<p class="ref">Ref. catastral <b>${rc}</b></p>`;
     if (/^[0-9]{5}[A-Z]/.test(rc)) {
       const pol = parseInt(rc.slice(6, 9), 10), parc = parseInt(rc.slice(9, 14), 10);
@@ -1992,15 +2079,15 @@ async function queryCatastro(ll) {
     }
     if (ldt) html += `<p class="ldt">${ldt.replace(/</g, '&lt;')}</p>`;
     html += `<p><a href="https://www1.sedecatastro.gob.es/CYCBienInmueble/OVCConCiud.aspx?UrbRus=&RefC=${encodeURIComponent(rc.slice(0, 14))}" target="_blank" rel="noopener">Ver en la Sede del Catastro</a></p>`;
-    catPopup.setHTML(html);
+    return html;
   } catch (e) {
-    catPopup.setHTML('<p>No se pudo consultar el Catastro. Revisa la conexión.</p>');
+    return '<p>No se pudo consultar el Catastro. Revisa la conexión.</p>';
   }
 }
 map.on('click', e => {
-  if (!prefs.ovCat || D.active || PLAY.on || document.body.classList.contains('layout')) return;
+  if (!(prefs.ovCat || prefs.ovVvpp || prefs.ovMontes) || D.active || PLAY.on || document.body.classList.contains('layout')) return;
   if (e.originalEvent && e.originalEvent.target.closest && e.originalEvent.target.closest('.maplibregl-marker, .maplibregl-popup')) return;
-  queryCatastro(e.lngLat);
+  queryPoint(e.lngLat);
 });
 $('cyclosmAlpha').addEventListener('input', e => { prefs.cyclosmAlpha = +e.target.value; savePrefs(); applyBasemap(); });
 $('ovHike').addEventListener('change', e => { prefs.ovHike = e.target.checked; savePrefs(); applyBasemap(); });

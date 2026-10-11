@@ -81,6 +81,10 @@
     {
       "source": "/catastro/:path*",
       "destination": "https://ovc.catastro.meh.es/:path*"
+    },
+    {
+      "source": "/rediam/:path*",
+      "destination": "https://www.juntadeandalucia.es/medioambiente/mapwms/:path*"
     }
   ]
 }
