@@ -381,6 +381,9 @@ if (NATIVE) {
 
 /* ---------- Preferencias guardadas ---------- */
 const PREFS_KEY = 'pendientes3d.prefs';
+// Capas de Waymarked Trails a través de Vercel (/wmt → tile.waymarkedtrails.org): así el navegador
+// puede usarlas en el mapa aunque su servidor no envíe cabeceras CORS. En local, directo.
+const WMT = /\.vercel\.app$/.test(location.hostname) ? location.origin + '/wmt' : 'https://tile.waymarkedtrails.org';
 const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true, arrowStep: 'auto', playAlpha: 86, ovMtb: false, ovHike: false },
   (() => { try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch (e) { return {}; } })());
 function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {} }
@@ -435,11 +438,11 @@ const map = new maplibregl.Map({
         attribution: 'CyclOSM · © colaboradores de OpenStreetMap'
       },
       wmMtb: {
-        type: 'raster', tiles: ['https://tile.waymarkedtrails.org/mtb/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 18,
+        type: 'raster', tiles: [WMT + '/mtb/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 18,
         attribution: 'Rutas señalizadas: Waymarked Trails (CC BY-SA)'
       },
       wmHike: {
-        type: 'raster', tiles: ['https://tile.waymarkedtrails.org/hiking/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 18,
+        type: 'raster', tiles: [WMT + '/hiking/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 18,
         attribution: 'Rutas señalizadas: Waymarked Trails (CC BY-SA)'
       },
       dem: {
@@ -1083,8 +1086,8 @@ function tileXY(lon, lat, z) {
 function tileUrls(z, x, y) {
   const urls = [];
   if (z >= 12 && prefs.basemap === 'cyclosm') urls.push(`https://${'abc'[(x + y) % 3]}.tile-cyclosm.openstreetmap.fr/cyclosm/${z}/${x}/${y}.png`);
-  if (z >= 12 && prefs.ovMtb) urls.push(`https://tile.waymarkedtrails.org/mtb/${z}/${x}/${y}.png`);
-  if (z >= 12 && prefs.ovHike) urls.push(`https://tile.waymarkedtrails.org/hiking/${z}/${x}/${y}.png`);
+  if (z >= 12 && prefs.ovMtb) urls.push(`${WMT}/mtb/${z}/${x}/${y}.png`);
+  if (z >= 12 && prefs.ovHike) urls.push(`${WMT}/hiking/${z}/${x}/${y}.png`);
   if (z >= 12 && prefs.basemap !== 'cyclosm') urls.push(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`);
   if (z >= 12 && prefs.basemap === 'hybrid') {
     urls.push(`https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/${z}/${y}/${x}`,
@@ -1155,8 +1158,8 @@ function offlineUrlsFor(pts) {
           add(`https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/${z}/${y}/${x}`, AVG_KB.ref);
           add(`https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/${z}/${y}/${x}`, AVG_KB.ref);
         }
-        if (prefs.ovMtb) add(`https://tile.waymarkedtrails.org/mtb/${z}/${x}/${y}.png`, AVG_KB.ov);
-        if (prefs.ovHike) add(`https://tile.waymarkedtrails.org/hiking/${z}/${x}/${y}.png`, AVG_KB.ov);
+        if (prefs.ovMtb) add(`${WMT}/mtb/${z}/${x}/${y}.png`, AVG_KB.ov);
+        if (prefs.ovHike) add(`${WMT}/hiking/${z}/${x}/${y}.png`, AVG_KB.ov);
         // Relieve: hasta z14 con margen, z15 solo bajo la ruta
         if (z <= 14) add(`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`, AVG_KB.dem);
       }
