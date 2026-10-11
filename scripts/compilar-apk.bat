@@ -44,22 +44,16 @@ echo === Pendientes 3D - compilacion local ===
 echo Fecha: %DATE% %TIME%
 echo Carpeta: %ROOT%
 
-rem ---------- Java (el JDK que trae Android Studio) ----------
-if defined JAVA_HOME if exist "%JAVA_HOME%\bin\java.exe" goto java_ok
-set "JAVA_HOME="
-for %%d in ("%ProgramFiles%\Android\Android Studio\jbr" "%LOCALAPPDATA%\Programs\Android Studio\jbr" "%ProgramFiles%\Android\Android Studio1\jbr" "%ProgramFiles(x86)%\Android\Android Studio\jbr") do (
-  if not defined JAVA_HOME if exist "%%~d\bin\java.exe" set "JAVA_HOME=%%~d"
-)
-if not defined JAVA_HOME (
-  for /d %%d in ("%USERPROFILE%\.jdks\*21*" "%USERPROFILE%\.jdks\*") do (
-    if not defined JAVA_HOME if exist "%%~d\bin\java.exe" set "JAVA_HOME=%%~d"
-  )
-)
-if not defined JAVA_HOME (
-  echo ERROR: no encuentro Java. Instala Android Studio o define JAVA_HOME.
+rem ---------- Java 21 o superior (Capacitor 8 lo exige) ----------
+set "JFOUND="
+for %%d in ("%ProgramFiles%\Android\Android Studio\jbr" "%LOCALAPPDATA%\Programs\Android Studio\jbr") do call :tryjava "%%~d"
+if not defined JFOUND for /d %%d in ("%ProgramFiles%\Eclipse Adoptium\jdk-2*" "%ProgramFiles%\Java\jdk-2*" "%ProgramFiles%\Microsoft\jdk-2*" "%ProgramFiles%\Zulu\zulu-2*" "%USERPROFILE%\.jdks\*") do call :tryjava "%%~d"
+if not defined JFOUND if defined JAVA_HOME call :tryjava "%JAVA_HOME%"
+if not defined JFOUND (
+  echo ERROR: no encuentro Java 21 o superior. Instala el JDK 21 de adoptium.net o actualiza Android Studio.
   exit /b 1
 )
-:java_ok
+set "JAVA_HOME=%JFOUND%"
 echo JAVA_HOME=%JAVA_HOME%
 "%JAVA_HOME%\bin\java.exe" -version
 set "PATH=%JAVA_HOME%\bin;%PATH%"
@@ -159,4 +153,19 @@ copy /y "%OUT%" "%DEST%" >nul
 > "%ROOT%\apk-generado.txt" echo %DEST%
 echo APK: %DEST%
 echo RESULTADO: OK
+exit /b 0
+
+
+rem ---------- Acepta un JDK solo si es version 21 o superior ----------
+:tryjava
+if defined JFOUND exit /b 0
+set "JD=%~1"
+if "%JD:~-1%"=="\" set "JD=%JD:~0,-1%"
+if not exist "%JD%\bin\java.exe" exit /b 0
+"%JD%\bin\java.exe" -version 2>&1 | findstr /r /c:"version \"2[1-9]" /c:"version \"[3-9][0-9]" >nul
+if errorlevel 1 (
+  echo Descartado ^(menor que 21^): %JD%
+  exit /b 0
+)
+set "JFOUND=%JD%"
 exit /b 0
