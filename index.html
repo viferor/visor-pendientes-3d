@@ -75,6 +75,9 @@ details.settings summary::after{content:'+';font-size:15px}
 details.settings[open] summary::after{content:'–'}
 details.settings[open] summary{margin-bottom:10px}
 .ctl{display:grid;grid-template-columns:64px minmax(0,1fr);align-items:center;gap:9px 10px}
+.stack{display:flex;flex-direction:column;gap:6px}
+.stack label{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+.stack input{width:100%;accent-color:var(--paint)}
 .ctl > label,.ctl > span{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
 select,input[type=range],input[type=text]{width:100%;min-width:0}
 select,input[type=text]{background:rgba(255,255,255,.06);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:500 13.5px var(--body)}
@@ -145,6 +148,15 @@ body.drawing #map canvas{cursor:crosshair}
   #live b{font-size:18px}
   body.playing #panel{display:none}
 }
+
+/* Transparencia de los cuadros durante la reproducción */
+:root{--play-alpha:.86}
+body.playing #player, body.playing #live, body.playing #panel{background:rgba(13,18,16,var(--play-alpha));
+  border-color:rgba(238,243,238,calc(var(--play-alpha) * .16 + .04))}
+body.playing.see-through #player, body.playing.see-through #live, body.playing.see-through #panel{backdrop-filter:none;-webkit-backdrop-filter:none}
+body.playing.see-through #live b, body.playing.see-through #live small, body.playing.see-through #player .sp-end,
+body.playing.see-through #speedVal, body.playing.see-through #panel{text-shadow:0 1px 3px #000, 0 0 2px #000}
+body.playing.see-through #live small{color:#dfe7df}
 
 /* Modo mover controles */
 #layoutBar{position:fixed;left:50%;transform:translateX(-50%);top:calc(10px + var(--safe-area-inset-top, env(safe-area-inset-top,0px)));z-index:20;
@@ -260,6 +272,10 @@ body.layout .movable *{pointer-events:none}
         </div>
         <label class="check"><input type="checkbox" id="showProfile" checked> Mostrar perfil de altitud</label>
         <label class="check" id="followRow"><input type="checkbox" id="followProfile" checked> Llevar la vista al punto marcado en el perfil</label>
+        <div class="stack">
+          <label for="playAlpha">Fondo de los cuadros al reproducir</label>
+          <input id="playAlpha" type="range" min="0" max="100" step="5" value="86">
+        </div>
         <div class="ctl" id="profileAlphaRow">
           <label for="profileAlpha">Opacidad</label>
           <input id="profileAlpha" type="range" min="0" max="100" step="5" value="86">
@@ -327,7 +343,7 @@ if (NATIVE) {
 
 /* ---------- Preferencias guardadas ---------- */
 const PREFS_KEY = 'pendientes3d.prefs';
-const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true, arrowStep: 'auto' },
+const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true, arrowStep: 'auto', playAlpha: 86 },
   (() => { try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch (e) { return {}; } })());
 function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {} }
 
@@ -1547,6 +1563,16 @@ function applyProfilePrefs() {
 }
 $('showProfile').addEventListener('change', e => { prefs.profile = e.target.checked; savePrefs(); applyProfilePrefs(); if (!prefs.profile) clearSelection(); });
 $('profileAlpha').addEventListener('input', e => { prefs.alpha = +e.target.value; savePrefs(); applyProfilePrefs(); });
+
+/* ---------- Transparencia al reproducir ---------- */
+function applyPlayAlpha() {
+  const a = prefs.playAlpha / 100;
+  document.documentElement.style.setProperty('--play-alpha', a);
+  document.body.classList.toggle('see-through', a < 0.45);
+  $('playAlpha').value = prefs.playAlpha;
+}
+$('playAlpha').addEventListener('input', e => { prefs.playAlpha = +e.target.value; savePrefs(); applyPlayAlpha(); });
+applyPlayAlpha();
 
 /* ---------- Tipo de mapa y seguimiento ---------- */
 function applyBasemap() {
