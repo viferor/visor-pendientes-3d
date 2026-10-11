@@ -76,6 +76,8 @@ details.settings[open] summary::after{content:'–'}
 details.settings[open] summary{margin-bottom:10px}
 .ctl{display:grid;grid-template-columns:64px minmax(0,1fr);align-items:center;gap:9px 10px}
 .stack{display:flex;flex-direction:column;gap:6px}
+.layers{display:flex;flex-direction:column;gap:6px}
+.layers .check{font-size:13px}
 .stack label{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
 .stack input{width:100%;accent-color:var(--paint)}
 .ctl > label,.ctl > span{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
@@ -257,6 +259,12 @@ body.layout .movable *{pointer-events:none}
         <div class="seg" role="group" aria-label="Tipo de mapa">
           <button type="button" data-basemap="sat">Satélite</button>
           <button type="button" data-basemap="hybrid">Híbrido</button>
+          <button type="button" data-basemap="cyclosm" title="Mapa ciclista de OpenStreetMap: sendas con nombre, firme y dificultad MTB">CyclOSM</button>
+        </div>
+        <span>Capas</span>
+        <div class="layers">
+          <label class="check"><input type="checkbox" id="ovMtb"> Rutas MTB señalizadas</label>
+          <label class="check"><input type="checkbox" id="ovHike"> Rutas de senderismo (GR, PR, SL)</label>
         </div>
         <label for="exag">Relieve</label>
         <input id="exag" type="range" min="1" max="3" step="0.1" value="1.5">
@@ -347,7 +355,7 @@ if (NATIVE) {
 
 /* ---------- Preferencias guardadas ---------- */
 const PREFS_KEY = 'pendientes3d.prefs';
-const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true, arrowStep: 'auto', playAlpha: 86 },
+const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true, arrowStep: 'auto', playAlpha: 86, ovMtb: false, ovHike: false },
   (() => { try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch (e) { return {}; } })());
 function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {} }
 
@@ -394,6 +402,20 @@ const map = new maplibregl.Map({
         tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}'],
         tileSize: 256, maxzoom: 19
       },
+      cyclosm: {
+        type: 'raster',
+        tiles: ['a', 'b', 'c'].map(k => `https://${k}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png`),
+        tileSize: 256, maxzoom: 18,
+        attribution: 'CyclOSM · © colaboradores de OpenStreetMap'
+      },
+      wmMtb: {
+        type: 'raster', tiles: ['https://tile.waymarkedtrails.org/mtb/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 18,
+        attribution: 'Rutas señalizadas: Waymarked Trails (CC BY-SA)'
+      },
+      wmHike: {
+        type: 'raster', tiles: ['https://tile.waymarkedtrails.org/hiking/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 18,
+        attribution: 'Rutas señalizadas: Waymarked Trails (CC BY-SA)'
+      },
       dem: {
         type: 'raster-dem',
         tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
@@ -404,7 +426,10 @@ const map = new maplibregl.Map({
     layers: [
       { id: 'sat', type: 'raster', source: 'sat' },
       { id: 'roads', type: 'raster', source: 'roads', layout: { visibility: prefs.basemap === 'hybrid' ? 'visible' : 'none' } },
-      { id: 'places', type: 'raster', source: 'places', layout: { visibility: prefs.basemap === 'hybrid' ? 'visible' : 'none' } }
+      { id: 'places', type: 'raster', source: 'places', layout: { visibility: prefs.basemap === 'hybrid' ? 'visible' : 'none' } },
+      { id: 'cyclosm', type: 'raster', source: 'cyclosm', layout: { visibility: prefs.basemap === 'cyclosm' ? 'visible' : 'none' } },
+      { id: 'wmHike', type: 'raster', source: 'wmHike', paint: { 'raster-opacity': 0.9 }, layout: { visibility: prefs.ovHike ? 'visible' : 'none' } },
+      { id: 'wmMtb', type: 'raster', source: 'wmMtb', paint: { 'raster-opacity': 0.95 }, layout: { visibility: prefs.ovMtb ? 'visible' : 'none' } }
     ],
     terrain: { source: 'dem', exaggeration: prefs.exag }
   },
@@ -1030,7 +1055,10 @@ function tileXY(lon, lat, z) {
 }
 function tileUrls(z, x, y) {
   const urls = [];
-  if (z >= 12) urls.push(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`);
+  if (z >= 12 && prefs.basemap === 'cyclosm') urls.push(`https://${'abc'[(x + y) % 3]}.tile-cyclosm.openstreetmap.fr/cyclosm/${z}/${x}/${y}.png`);
+  if (z >= 12 && prefs.ovMtb) urls.push(`https://tile.waymarkedtrails.org/mtb/${z}/${x}/${y}.png`);
+  if (z >= 12 && prefs.ovHike) urls.push(`https://tile.waymarkedtrails.org/hiking/${z}/${x}/${y}.png`);
+  if (z >= 12 && prefs.basemap !== 'cyclosm') urls.push(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`);
   if (z >= 12 && prefs.basemap === 'hybrid') {
     urls.push(`https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/${z}/${y}/${x}`,
               `https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/${z}/${y}/${x}`);
@@ -1040,7 +1068,7 @@ function tileUrls(z, x, y) {
 }
 function prefetchRoute(fromIdx, backwards) {
   if (!S.pts) return;
-  const key = S.pts.length + ':' + S.pts[0].lat + ':' + prefs.basemap;
+  const key = S.pts.length + ':' + S.pts[0].lat + ':' + prefs.basemap + ':' + prefs.ovMtb + prefs.ovHike;
   if (PREF.key !== key) { PREF.key = key; PREF.seen = new Set(); PREF.done = 0; PREF.total = 0; }
   // Pasillo: más ancho en zooms bajos, que son los que se ven hacia el horizonte con la vista inclinada
   const levels = [[16, 1], [15, 1], [14, 1], [13, 2], [12, 2]];
@@ -1692,13 +1720,17 @@ applyPlayAlpha();
 
 /* ---------- Tipo de mapa y seguimiento ---------- */
 function applyBasemap() {
-  const vis = prefs.basemap === 'hybrid' ? 'visible' : 'none';
-  for (const id of ['roads', 'places']) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis);
+  const v = on => on ? 'visible' : 'none', bm = prefs.basemap;
+  const want = { sat: bm !== 'cyclosm', roads: bm === 'hybrid', places: bm === 'hybrid', cyclosm: bm === 'cyclosm', wmMtb: prefs.ovMtb, wmHike: prefs.ovHike };
+  for (const id in want) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', v(want[id]));
+  $('ovMtb').checked = prefs.ovMtb; $('ovHike').checked = prefs.ovHike;
   document.querySelectorAll('[data-basemap]').forEach(b => b.setAttribute('aria-pressed', b.dataset.basemap === prefs.basemap));
 }
 document.querySelectorAll('[data-basemap]').forEach(b => b.addEventListener('click', () => {
   prefs.basemap = b.dataset.basemap; savePrefs(); applyBasemap();
 }));
+$('ovMtb').addEventListener('change', e => { prefs.ovMtb = e.target.checked; savePrefs(); applyBasemap(); });
+$('ovHike').addEventListener('change', e => { prefs.ovHike = e.target.checked; savePrefs(); applyBasemap(); });
 $('showArrows').checked = prefs.arrows;
 $('arrowStep').value = prefs.arrowStep;
 $('arrowStepRow').hidden = !prefs.arrows;

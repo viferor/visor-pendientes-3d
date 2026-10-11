@@ -44,7 +44,9 @@ Al cambiar la app, sube el número de `VERSION` en `sw.js` para que los móviles
 
 ## Datos y créditos
 
-- Imágenes satélite: © Esri, Maxar, Earthstar Geographics.
+- Imágenes satélite: © Esri, Maxar, Earthstar Geographics. Carreteras y nombres (híbrido): © Esri.
+- Mapa ciclista: CyclOSM · © colaboradores de OpenStreetMap.
+- Rutas MTB y de senderismo señalizadas: Waymarked Trails (CC BY-SA).
 - Relieve: Terrain Tiles (Mapzen / AWS Open Data).
-- Cálculo de rutas: OSRM, servidor público de FOSSGIS · datos © colaboradores de OpenStreetMap.
+- Cálculo de rutas: OSRM (servidor público de FOSSGIS) y BRouter (brouter.de) · datos © colaboradores de OpenStreetMap.
 - Mapa: MapLibre GL JS.

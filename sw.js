@@ -2,7 +2,7 @@
 // - La app (HTML, librería, iconos) se guarda al instalar: abre sin conexión.
 // - Las teselas de satélite y relieve que ya has visto se guardan para reutilizarlas.
 // - El cálculo de rutas siempre va por red.
-const VERSION = 'v19';
+const VERSION = 'v20';
 const APP_CACHE = `pendientes3d-app-${VERSION}`;
 const TILE_CACHE = 'pendientes3d-tiles';
 const FONT_CACHE = 'pendientes3d-fonts';
@@ -35,6 +35,8 @@ self.addEventListener('activate', e => {
 
 const isTile = url =>
   url.hostname === 'server.arcgisonline.com' ||
+  url.hostname.endsWith('.tile-cyclosm.openstreetmap.fr') ||
+  url.hostname === 'tile.waymarkedtrails.org' ||
   (url.hostname === 's3.amazonaws.com' && url.pathname.startsWith('/elevation-tiles-prod/'));
 const isFont = url => url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com';
 
