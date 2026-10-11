@@ -1151,7 +1151,26 @@ function fitRoute(animate = true) {
 }
 
 /* ---------- Carga de un GPX ---------- */
-async function loadTrack(name, pts) {
+/* ---------- Último track: se guarda en el navegador (IndexedDB) ---------- */
+function idb() {
+  return new Promise((res, rej) => {
+    try {
+      const r = indexedDB.open('pendientes3d', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('kv');
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    } catch (e) { rej(e); }
+  });
+}
+async function idbSet(key, val) {
+  try { const db = await idb(); await new Promise((res, rej) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(val, key); t.oncomplete = res; t.onerror = () => rej(t.error); }); } catch (e) {}
+}
+async function idbGet(key) {
+  try { const db = await idb(); return await new Promise((res, rej) => { const q = db.transaction('kv').objectStore('kv').get(key); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); } catch (e) { return undefined; }
+}
+const saveLastTrack = (name, pts) => idbSet('lastTrack', { name, pts, savedAt: Date.now() });
+
+async function loadTrack(name, pts, save = true) {
+  if (save) saveLastTrack(name, pts);
   await mapReady;
   if (D.active) endDraw(false);
   S.raw = { pts };
@@ -1291,6 +1310,7 @@ function endDraw(keep = true) {
   if (keep && S.pts) {
     S.name = $('routeName').value.trim() || 'Mi ruta';
     $('trackName').textContent = S.name;
+    if (S.raw) saveLastTrack(S.name, S.raw.pts);
     map.easeTo({ pitch: 60, duration: 1000 });
   } else if (keep) {
     $('trackName').textContent = 'Abre un GPX o dibuja una ruta';
@@ -1479,12 +1499,18 @@ if ('launchQueue' in window) {
 applyProfilePrefs();
 applyBasemap();
 syncRouteButtons();
-(function demo() {
+// Al arrancar: el último track abierto o dibujado; si no hay ninguno, el ejemplo del Veleta
+(async function start() {
+  if ('launchQueue' in window && new URLSearchParams(location.search).has('file')) return;
+  const last = await idbGet('lastTrack');
+  if (last && Array.isArray(last.pts) && last.pts.length > 1) {
+    await loadTrack(last.name, last.pts, false);
+    return;
+  }
   // Ejemplo: Pradollano → Pico Veleta (trazado aproximado, altitudes del terreno)
   const wp = [[-3.3965, 37.0935], [-3.3905, 37.0890], [-3.3850, 37.0858], [-3.3800, 37.0810],
               [-3.3760, 37.0745], [-3.3720, 37.0680], [-3.3690, 37.0620], [-3.3665, 37.0568]];
-  if ('launchQueue' in window && new URLSearchParams(location.search).has('file')) return;
-  loadTrack('Ejemplo: Pradollano → Pico Veleta', densify(wp, 20));
+  loadTrack('Ejemplo: Pradollano → Pico Veleta', densify(wp, 20), false);
 })();
 </script>
 </body>
