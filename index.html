@@ -286,8 +286,11 @@ body.layout .movable *{pointer-events:none}
           <button type="button" data-basemap="hybrid">Híbrido</button>
           <button type="button" data-basemap="cyclosm" title="Mapa ciclista de OpenStreetMap: sendas con nombre, firme y dificultad MTB">CyclOSM</button>
         </div>
+        <label for="cyclosmAlpha" id="cyclosmAlphaLbl">Satélite debajo</label>
+        <input id="cyclosmAlpha" type="range" min="0" max="100" step="5" value="100" title="Opacidad de CyclOSM sobre el satélite">
         <span>Capas</span>
         <div class="layers">
+          <label class="check"><input type="checkbox" id="ovLite"> Sendas y caminos (CyclOSM lite)</label>
           <label class="check"><input type="checkbox" id="ovMtb"> Rutas MTB señalizadas</label>
           <label class="check"><input type="checkbox" id="ovHike"> Rutas de senderismo (GR, PR, SL)</label>
         </div>
@@ -384,7 +387,7 @@ const PREFS_KEY = 'pendientes3d.prefs';
 // Capas de Waymarked Trails a través de Vercel (/wmt → tile.waymarkedtrails.org): así el navegador
 // puede usarlas en el mapa aunque su servidor no envíe cabeceras CORS. En local, directo.
 const WMT = /\.vercel\.app$/.test(location.hostname) ? location.origin + '/wmt' : 'https://tile.waymarkedtrails.org';
-const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true, arrowStep: 'auto', playAlpha: 86, ovMtb: false, ovHike: false },
+const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true, arrowStep: 'auto', playAlpha: 86, ovMtb: false, ovHike: false, ovLite: false, cyclosmAlpha: 100 },
   (() => { try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch (e) { return {}; } })());
 function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {} }
 
@@ -437,6 +440,12 @@ const map = new maplibregl.Map({
         tileSize: 256, maxzoom: 18,
         attribution: 'CyclOSM · © colaboradores de OpenStreetMap'
       },
+      cyclosmLite: {
+        type: 'raster',
+        tiles: ['a', 'b', 'c'].map(k => `https://${k}.tile-cyclosm.openstreetmap.fr/cyclosm-lite/{z}/{x}/{y}.png`),
+        tileSize: 256, maxzoom: 18,
+        attribution: 'CyclOSM · © colaboradores de OpenStreetMap'
+      },
       wmMtb: {
         type: 'raster', tiles: [WMT + '/mtb/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 18,
         attribution: 'Rutas señalizadas: Waymarked Trails (CC BY-SA)'
@@ -456,7 +465,8 @@ const map = new maplibregl.Map({
       { id: 'sat', type: 'raster', source: 'sat' },
       { id: 'roads', type: 'raster', source: 'roads', layout: { visibility: prefs.basemap === 'hybrid' ? 'visible' : 'none' } },
       { id: 'places', type: 'raster', source: 'places', layout: { visibility: prefs.basemap === 'hybrid' ? 'visible' : 'none' } },
-      { id: 'cyclosm', type: 'raster', source: 'cyclosm', layout: { visibility: prefs.basemap === 'cyclosm' ? 'visible' : 'none' } },
+      { id: 'cyclosm', type: 'raster', source: 'cyclosm', paint: { 'raster-opacity': prefs.cyclosmAlpha / 100 }, layout: { visibility: prefs.basemap === 'cyclosm' ? 'visible' : 'none' } },
+      { id: 'cyclosmLite', type: 'raster', source: 'cyclosmLite', layout: { visibility: prefs.ovLite ? 'visible' : 'none' } },
       { id: 'wmHike', type: 'raster', source: 'wmHike', paint: { 'raster-opacity': 0.9 }, layout: { visibility: prefs.ovHike ? 'visible' : 'none' } },
       { id: 'wmMtb', type: 'raster', source: 'wmMtb', paint: { 'raster-opacity': 0.95 }, layout: { visibility: prefs.ovMtb ? 'visible' : 'none' } }
     ],
@@ -1088,7 +1098,8 @@ function tileUrls(z, x, y) {
   if (z >= 12 && prefs.basemap === 'cyclosm') urls.push(`https://${'abc'[(x + y) % 3]}.tile-cyclosm.openstreetmap.fr/cyclosm/${z}/${x}/${y}.png`);
   if (z >= 12 && prefs.ovMtb) urls.push(`${WMT}/mtb/${z}/${x}/${y}.png`);
   if (z >= 12 && prefs.ovHike) urls.push(`${WMT}/hiking/${z}/${x}/${y}.png`);
-  if (z >= 12 && prefs.basemap !== 'cyclosm') urls.push(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`);
+  if (z >= 12 && prefs.ovLite && prefs.basemap !== 'cyclosm') urls.push(`https://${'abc'[(x + y) % 3]}.tile-cyclosm.openstreetmap.fr/cyclosm-lite/${z}/${x}/${y}.png`);
+  if (z >= 12 && (prefs.basemap !== 'cyclosm' || prefs.cyclosmAlpha < 100)) urls.push(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`);
   if (z >= 12 && prefs.basemap === 'hybrid') {
     urls.push(`https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/${z}/${y}/${x}`,
               `https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/${z}/${y}/${x}`);
@@ -1098,7 +1109,7 @@ function tileUrls(z, x, y) {
 }
 function prefetchRoute(fromIdx, backwards) {
   if (!S.pts) return;
-  const key = S.pts.length + ':' + S.pts[0].lat + ':' + prefs.basemap + ':' + prefs.ovMtb + prefs.ovHike;
+  const key = S.pts.length + ':' + S.pts[0].lat + ':' + prefs.basemap + ':' + prefs.ovMtb + prefs.ovHike + prefs.ovLite + (prefs.cyclosmAlpha < 100);
   if (PREF.key !== key) { PREF.key = key; PREF.seen = new Set(); PREF.done = 0; PREF.total = 0; }
   // Pasillo: más ancho en zooms bajos, que son los que se ven hacia el horizonte con la vista inclinada
   const levels = [[16, 1], [15, 1], [14, 1], [13, 2], [12, 2]];
@@ -1153,7 +1164,8 @@ function offlineUrlsFor(pts) {
       for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) {
         const x = tx + dx, y = ty + dy;
         if (prefs.basemap === 'cyclosm') add(`https://${'abc'[(x + y) % 3]}.tile-cyclosm.openstreetmap.fr/cyclosm/${z}/${x}/${y}.png`, AVG_KB.cyclosm);
-        else add(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`, AVG_KB.sat);
+        if (prefs.basemap !== 'cyclosm' || prefs.cyclosmAlpha < 100) add(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`, AVG_KB.sat);
+        if (prefs.ovLite && prefs.basemap !== 'cyclosm') add(`https://${'abc'[(x + y) % 3]}.tile-cyclosm.openstreetmap.fr/cyclosm-lite/${z}/${x}/${y}.png`, AVG_KB.ov);
         if (prefs.basemap === 'hybrid') {
           add(`https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/${z}/${y}/${x}`, AVG_KB.ref);
           add(`https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/${z}/${y}/${x}`, AVG_KB.ref);
@@ -1180,7 +1192,7 @@ function updateOfflineButton() {
   let kb = 0; for (const v of urls.values()) kb += v;
   btn.disabled = false;
   btn.textContent = `Guardar mapa de esta ruta (≈ ${fmtMB(kb)})`;
-  btn.title = `${urls.size.toLocaleString('es-ES')} teselas · mapa ${MAP_NAMES[prefs.basemap]}${prefs.ovMtb ? ' + rutas MTB' : ''}${prefs.ovHike ? ' + senderismo' : ''} + relieve`;
+  btn.title = `${urls.size.toLocaleString('es-ES')} teselas · mapa ${MAP_NAMES[prefs.basemap]}${prefs.ovLite ? ' + sendas CyclOSM' : ''}${prefs.ovMtb ? ' + rutas MTB' : ''}${prefs.ovHike ? ' + senderismo' : ''} + relieve`;
 }
 async function renderOfflineList() {
   const list = $('offlineList'), meta = offlineMeta();
@@ -1870,15 +1882,24 @@ applyPlayAlpha();
 function applyBasemap() {
   if (typeof OFF !== 'undefined' && $('offlineBox').open) setTimeout(updateOfflineButton);
   const v = on => on ? 'visible' : 'none', bm = prefs.basemap;
-  const want = { sat: bm !== 'cyclosm', roads: bm === 'hybrid', places: bm === 'hybrid', cyclosm: bm === 'cyclosm', wmMtb: prefs.ovMtb, wmHike: prefs.ovHike };
+  // Con CyclOSM, el satélite se carga debajo solo si se ha pedido transparencia
+  const satUnder = bm === 'cyclosm' && prefs.cyclosmAlpha < 100;
+  const want = { sat: bm !== 'cyclosm' || satUnder, roads: bm === 'hybrid', places: bm === 'hybrid', cyclosm: bm === 'cyclosm',
+                 cyclosmLite: prefs.ovLite && bm !== 'cyclosm', wmMtb: prefs.ovMtb, wmHike: prefs.ovHike };
   for (const id in want) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', v(want[id]));
-  $('ovMtb').checked = prefs.ovMtb; $('ovHike').checked = prefs.ovHike;
+  if (map.getLayer('cyclosm')) map.setPaintProperty('cyclosm', 'raster-opacity', prefs.cyclosmAlpha / 100);
+  $('ovMtb').checked = prefs.ovMtb; $('ovHike').checked = prefs.ovHike; $('ovLite').checked = prefs.ovLite;
+  $('cyclosmAlpha').value = prefs.cyclosmAlpha;
+  $('cyclosmAlpha').hidden = $('cyclosmAlphaLbl').hidden = bm !== 'cyclosm';
+  $('ovLite').closest('label').hidden = bm === 'cyclosm';
   document.querySelectorAll('[data-basemap]').forEach(b => b.setAttribute('aria-pressed', b.dataset.basemap === prefs.basemap));
 }
 document.querySelectorAll('[data-basemap]').forEach(b => b.addEventListener('click', () => {
   prefs.basemap = b.dataset.basemap; savePrefs(); applyBasemap();
 }));
 $('ovMtb').addEventListener('change', e => { prefs.ovMtb = e.target.checked; savePrefs(); applyBasemap(); });
+$('ovLite').addEventListener('change', e => { prefs.ovLite = e.target.checked; savePrefs(); applyBasemap(); });
+$('cyclosmAlpha').addEventListener('input', e => { prefs.cyclosmAlpha = +e.target.value; savePrefs(); applyBasemap(); });
 $('ovHike').addEventListener('change', e => { prefs.ovHike = e.target.checked; savePrefs(); applyBasemap(); });
 $('showArrows').checked = prefs.arrows;
 $('arrowStep').value = prefs.arrowStep;
