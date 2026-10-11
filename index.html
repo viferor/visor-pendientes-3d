@@ -77,6 +77,14 @@ details.settings[open] summary{margin-bottom:10px}
 .ctl{display:grid;grid-template-columns:64px minmax(0,1fr);align-items:center;gap:9px 10px}
 .stack{display:flex;flex-direction:column;gap:6px}
 .layers{display:flex;flex-direction:column;gap:6px}
+.offline-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.offline-list li{display:flex;align-items:center;gap:8px;font-size:13px;padding:6px 8px;border:1px solid var(--line);border-radius:6px}
+.offline-list li span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.offline-list li small{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.offline-list li button{flex:none;padding:5px 8px;font-size:12px}
+#offlineBar{accent-color:var(--paint);height:8px}
+#netBadge{position:absolute;left:50%;transform:translateX(-50%);top:calc(10px + var(--safe-area-inset-top, env(safe-area-inset-top,0px)));z-index:5;
+  background:#ec4b36;color:#fff;font:600 12.5px var(--body);padding:5px 10px;border-radius:999px;box-shadow:0 2px 8px rgba(0,0,0,.4)}
 .layers .check{font-size:13px}
 .stack label{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
 .stack input{width:100%;accent-color:var(--paint)}
@@ -235,6 +243,23 @@ body.layout .movable *{pointer-events:none}
 
     <div class="stats" id="stats"></div>
 
+    <details class="settings" id="offlineBox">
+      <summary>Sin cobertura</summary>
+      <div class="sub" style="margin-top:0">
+        <p class="hint" id="offlineInfo">Guarda en el móvil el mapa y el relieve alrededor de la ruta para verla en mitad del campo sin conexión.</p>
+        <button class="btn primary" id="offlineSave" type="button" disabled>Guardar mapa de esta ruta</button>
+        <div id="offlineProgress" hidden>
+          <progress id="offlineBar" max="100" value="0" style="width:100%"></progress>
+          <div class="row" style="align-items:center">
+            <span class="hint" id="offlineMsg" style="flex:1"></span>
+            <button class="btn" id="offlineCancel" type="button" style="flex:none">Cancelar</button>
+          </div>
+        </div>
+        <ul id="offlineList" class="offline-list"></ul>
+        <p class="hint" id="offlineUsage"></p>
+      </div>
+    </details>
+
     <details class="settings" id="settings" open>
       <summary>Ajustes</summary>
       <div class="ctl">
@@ -338,6 +363,7 @@ body.layout .movable *{pointer-events:none}
   <button type="button" class="btn primary" id="layoutDone">Listo</button>
 </div>
 
+<div id="netBadge" hidden>Sin conexión · usando mapas guardados</div>
 <div id="drop" hidden>Suelta el GPX aquí</div>
 
 <script src="lib/maplibre-gl.js"></script>
@@ -806,6 +832,7 @@ function render() {
   drawProfile();
   updateExportButtons();
   showPlayer();
+  if ($('offlineBox').open) updateOfflineButton(); else if (!OFF.busy) $('offlineSave').disabled = false;
 }
 
 /* Flechas cada 5 km (cada 1 km en rutas de menos de 15 km), giradas en el sentido de la marcha */
@@ -1104,6 +1131,124 @@ function pumpPrefetch() {
     });
   }
 }
+
+/* ---------- Mapas para sin cobertura ---------- */
+// Descarga el mapa elegido, las capas activas y el relieve en un pasillo alrededor de la ruta, y lo guarda en
+// una caché aparte ('pendientes3d-offline') que el service worker consulta primero y nunca recorta.
+const OFF = { cache: 'pendientes3d-offline', busy: false, cancel: false };
+const AVG_KB = { sat: 22, cyclosm: 18, ov: 4, ref: 6, dem: 60 };
+function offlineUrlsFor(pts) {
+  const urls = new Map();   // url -> tamaño medio estimado (KB)
+  const add = (u, kb) => { if (!urls.has(u)) urls.set(u, kb); };
+  const total = pts[pts.length - 1].d, idxs = [];
+  for (let d = 0; d <= total; d += 120) idxs.push(idxAt(d));
+  idxs.push(pts.length - 1);
+  for (const i of idxs) {
+    const p = pts[i];
+    for (let z = 10; z <= 16; z++) {
+      const [tx, ty] = tileXY(p.lon, p.lat, z), r = 1;
+      for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) {
+        const x = tx + dx, y = ty + dy;
+        if (prefs.basemap === 'cyclosm') add(`https://${'abc'[(x + y) % 3]}.tile-cyclosm.openstreetmap.fr/cyclosm/${z}/${x}/${y}.png`, AVG_KB.cyclosm);
+        else add(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`, AVG_KB.sat);
+        if (prefs.basemap === 'hybrid') {
+          add(`https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/${z}/${y}/${x}`, AVG_KB.ref);
+          add(`https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/${z}/${y}/${x}`, AVG_KB.ref);
+        }
+        if (prefs.ovMtb) add(`https://tile.waymarkedtrails.org/mtb/${z}/${x}/${y}.png`, AVG_KB.ov);
+        if (prefs.ovHike) add(`https://tile.waymarkedtrails.org/hiking/${z}/${x}/${y}.png`, AVG_KB.ov);
+        // Relieve: hasta z14 con margen, z15 solo bajo la ruta
+        if (z <= 14) add(`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`, AVG_KB.dem);
+      }
+      if (z === 15) add(`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/15/${tx}/${ty}.png`, AVG_KB.dem);
+    }
+  }
+  return urls;
+}
+const fmtMB = kb => kb >= 1024 ? (kb / 1024).toFixed(kb >= 10240 ? 0 : 1).replace('.', ',') + ' MB' : Math.round(kb) + ' KB';
+function offlineMeta() { try { return JSON.parse(localStorage.getItem('pendientes3d.offline')) || []; } catch (e) { return []; } }
+function setOfflineMeta(m) { try { localStorage.setItem('pendientes3d.offline', JSON.stringify(m)); } catch (e) {} }
+const MAP_NAMES = { sat: 'satélite', hybrid: 'híbrido', cyclosm: 'CyclOSM' };
+
+function updateOfflineButton() {
+  const btn = $('offlineSave');
+  if (!S.pts || !('caches' in window) || OFF.busy) { btn.disabled = true; return; }
+  const urls = offlineUrlsFor(S.pts);
+  let kb = 0; for (const v of urls.values()) kb += v;
+  btn.disabled = false;
+  btn.textContent = `Guardar mapa de esta ruta (≈ ${fmtMB(kb)})`;
+  btn.title = `${urls.size.toLocaleString('es-ES')} teselas · mapa ${MAP_NAMES[prefs.basemap]}${prefs.ovMtb ? ' + rutas MTB' : ''}${prefs.ovHike ? ' + senderismo' : ''} + relieve`;
+}
+async function renderOfflineList() {
+  const list = $('offlineList'), meta = offlineMeta();
+  list.innerHTML = meta.map(m => `<li><span title="${m.name.replace(/"/g, '&quot;')}">${m.name.replace(/</g, '&lt;')}</span>
+    <small>${fmtMB(m.kb)} · ${MAP_NAMES[m.map] || ''}</small><button class="btn" type="button" data-del="${m.id}">Borrar</button></li>`).join('');
+  try {
+    const est = await navigator.storage.estimate();
+    $('offlineUsage').textContent = meta.length ? `Espacio usado por la app: ${fmtMB((est.usage || 0) / 1024)}` : '';
+  } catch (e) { $('offlineUsage').textContent = ''; }
+}
+async function saveOffline() {
+  if (!S.pts || OFF.busy) return;
+  OFF.busy = true; OFF.cancel = false;
+  try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (e) {}
+  const urls = [...offlineUrlsFor(S.pts).keys()];
+  const cache = await caches.open(OFF.cache);
+  $('offlineProgress').hidden = false; $('offlineSave').disabled = true;
+  let done = 0, fail = 0, bytes = 0, next = 0;
+  const worker = async () => {
+    while (!OFF.cancel && next < urls.length) {
+      const u = urls[next++];
+      try {
+        let r = await cache.match(u);
+        if (!r) {
+          r = await fetch(u, { mode: 'cors', credentials: 'omit' });
+          if (r.ok) { const b = await r.clone().blob(); bytes += b.size; await cache.put(u, r); }
+          else if (r.status !== 404) fail++;   // 404 = no hay tesela (mar, fuera de cobertura): no es un error
+        }
+      } catch (e) { fail++; }
+      done++;
+      if (done % 10 === 0 || done === urls.length) {
+        $('offlineBar').value = done / urls.length * 100;
+        $('offlineMsg').textContent = `${done.toLocaleString('es-ES')} / ${urls.length.toLocaleString('es-ES')} · ${fmtMB(bytes / 1024)}`;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: 6 }, worker));
+  OFF.busy = false;
+  $('offlineProgress').hidden = true;
+  if (OFF.cancel) { setStatus('Descarga cancelada. Lo ya descargado queda guardado en la caché normal.'); updateOfflineButton(); return; }
+  const id = Date.now().toString(36);
+  await idbSet('offline:' + id, urls);
+  const meta = offlineMeta();
+  meta.unshift({ id, name: S.name || 'Ruta', date: Date.now(), kb: bytes / 1024, n: urls.length, map: prefs.basemap });
+  setOfflineMeta(meta);
+  setStatus(fail ? `Mapa guardado, pero ${fail} teselas no se pudieron descargar. Vuelve a pulsar para completarlo.`
+                 : `Mapa de «${S.name || 'la ruta'}» guardado: lo verás sin cobertura.`, !!fail);
+  renderOfflineList(); updateOfflineButton();
+}
+async function deleteOffline(id) {
+  const meta = offlineMeta(), m = meta.find(x => x.id === id);
+  if (!m) return;
+  const rest = meta.filter(x => x.id !== id);
+  // Solo se borran las teselas que no usa otra ruta guardada
+  const keep = new Set();
+  for (const o of rest) for (const u of (await idbGet('offline:' + o.id)) || []) keep.add(u);
+  const urls = (await idbGet('offline:' + id)) || [];
+  const cache = await caches.open(OFF.cache);
+  await Promise.all(urls.filter(u => !keep.has(u)).map(u => cache.delete(u)));
+  await idbSet('offline:' + id, null);
+  setOfflineMeta(rest);
+  setStatus(`Borrado el mapa guardado de «${m.name}».`);
+  renderOfflineList();
+}
+$('offlineSave').addEventListener('click', saveOffline);
+$('offlineCancel').addEventListener('click', () => { OFF.cancel = true; });
+$('offlineList').addEventListener('click', e => { const b = e.target.closest('[data-del]'); if (b) deleteOffline(b.dataset.del); });
+$('offlineBox').addEventListener('toggle', () => { if ($('offlineBox').open) { updateOfflineButton(); renderOfflineList(); } });
+function updateNet() { $('netBadge').hidden = navigator.onLine; }
+addEventListener('online', updateNet); addEventListener('offline', updateNet); updateNet();
+renderOfflineList();
 
 /* ---------- Reproductor (vuelo tipo Strava) ---------- */
 // 1x = velocidad real. Con hora en el GPX avanza según el tiempo en movimiento (cada tramo
@@ -1720,6 +1865,7 @@ applyPlayAlpha();
 
 /* ---------- Tipo de mapa y seguimiento ---------- */
 function applyBasemap() {
+  if (typeof OFF !== 'undefined' && $('offlineBox').open) setTimeout(updateOfflineButton);
   const v = on => on ? 'visible' : 'none', bm = prefs.basemap;
   const want = { sat: bm !== 'cyclosm', roads: bm === 'hybrid', places: bm === 'hybrid', cyclosm: bm === 'cyclosm', wmMtb: prefs.ovMtb, wmHike: prefs.ovHike };
   for (const id in want) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', v(want[id]));

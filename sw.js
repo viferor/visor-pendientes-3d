@@ -1,11 +1,13 @@
 // Service worker de Visor de Pendientes 3D
 // - La app (HTML, librería, iconos) se guarda al instalar: abre sin conexión.
 // - Las teselas de satélite y relieve que ya has visto se guardan para reutilizarlas.
+// - Los mapas de las rutas guardadas para sin cobertura van en una caché aparte que no se recorta.
 // - El cálculo de rutas siempre va por red.
-const VERSION = 'v20';
+const VERSION = 'v21';
 const APP_CACHE = `pendientes3d-app-${VERSION}`;
 const TILE_CACHE = 'pendientes3d-tiles';
 const FONT_CACHE = 'pendientes3d-fonts';
+const OFFLINE_CACHE = 'pendientes3d-offline';   // mapas guardados a propósito: nunca se recortan
 const MAX_TILES = 8000;
 
 const APP_FILES = [
@@ -71,6 +73,9 @@ self.addEventListener('fetch', e => {
   // Teselas: caché primero
   if (isTile(url)) {
     e.respondWith((async () => {
+      // Primero los mapas guardados para sin cobertura (no se borran solos), luego la caché normal
+      const saved = await (await caches.open(OFFLINE_CACHE)).match(req.url);
+      if (saved) return saved;
       const cache = await caches.open(TILE_CACHE);
       const hit = await cache.match(req);
       if (hit) return hit;
