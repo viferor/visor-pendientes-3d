@@ -270,15 +270,21 @@ body.drawing #map canvas{cursor:crosshair}
 <div id="player" hidden>
   <button type="button" id="playBtn" aria-label="Reproducir">▶</button>
   <input type="range" id="playProgress" min="0" max="1000" value="0" aria-label="Posición en la ruta">
-  <select id="playSpeed" aria-label="Velocidad de reproducción">
+  <select id="playSpeed" aria-label="Velocidad de reproducción (1x = velocidad real)">
+    <option value="-60">◀◀ 60x</option>
+    <option value="-30">◀◀ 30x</option>
+    <option value="-10">◀◀ 10x</option>
     <option value="-5">◀◀ 5x</option>
     <option value="-3">◀◀ 3x</option>
     <option value="-2">◀◀ 2x</option>
     <option value="-1">◀◀ 1x</option>
-    <option value="1" selected>▶ 1x</option>
+    <option value="1" selected>▶ 1x real</option>
     <option value="2">▶ 2x</option>
     <option value="3">▶ 3x</option>
     <option value="5">▶ 5x</option>
+    <option value="10">▶ 10x</option>
+    <option value="30">▶ 30x</option>
+    <option value="60">▶ 60x</option>
   </select>
 </div>
 <div id="live" hidden aria-live="off"></div>
@@ -965,10 +971,10 @@ over.addEventListener('pointercancel', endDrag);
 over.addEventListener('pointerleave', () => { if (!dragging) hoverOut(); });
 
 /* ---------- Reproductor (vuelo tipo Strava) ---------- */
-// 1x = la ruta entera en unos 2 minutos. Con hora en el GPX avanza según el tiempo en movimiento
-// (más despacio en las subidas); sin hora, según la distancia.
+// 1x = velocidad real. Con hora en el GPX avanza según el tiempo en movimiento (cada tramo
+// a la velocidad a la que se hizo); sin hora (rutas dibujadas), a 20 km/h constantes.
 const PLAY = { on: false, x: 0, speed: 1, last: 0, brg: null, labelsAt: 0 };
-const BASE_SECONDS = 120;
+const NOMINAL_MS = 20 / 3.6;
 function playAxis() { const q = S.pts[S.pts.length - 1]; return S.hasTime ? q.mt : q.d; }
 function axisOf(p) { return S.hasTime ? p.mt : p.d; }
 function idxAtAxis(x) {
@@ -998,7 +1004,7 @@ function playFrame(now) {
   if (!PLAY.on) return;
   const dt = Math.min(0.1, (now - PLAY.last) / 1000); PLAY.last = now;
   const end = playAxis();
-  PLAY.x = Math.max(0, Math.min(end, PLAY.x + end / BASE_SECONDS * PLAY.speed * dt));
+  PLAY.x = Math.max(0, Math.min(end, PLAY.x + (S.hasTime ? 1 : NOMINAL_MS) * PLAY.speed * dt));
   const i = idxAtAxis(PLAY.x), j = Math.min(i + 1, S.pts.length - 1), a = S.pts[i], b = S.pts[j];
   const span = axisOf(b) - axisOf(a), f = span > 0 ? Math.min(1, (PLAY.x - axisOf(a)) / span) : 0;
   const lon = a.lon + (b.lon - a.lon) * f, lat = a.lat + (b.lat - a.lat) * f;
