@@ -118,6 +118,7 @@ input[type=range]{accent-color:var(--paint)}
 .wp.start{background:#8fe36b;width:20px;height:20px}
 .wp.end{background:#ec4b36;width:20px;height:20px}
 body.drawing #map canvas{cursor:crosshair}
+body.freehand #map .maplibregl-canvas-container, body.freehand #map canvas{touch-action:none;cursor:crosshair}
 
 /* Reproductor y datos del momento */
 #player{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(var(--profile-h) + var(--safe-area-inset-bottom, env(safe-area-inset-bottom,0px)) + 30px);
@@ -204,7 +205,8 @@ body.layout .movable *{pointer-events:none}
 
     <div id="drawTools" class="box" hidden>
       <h2>Dibujar ruta</h2>
-      <p class="hint">Toca el mapa para añadir puntos. Arrastra un punto para moverlo.</p>
+      <p class="hint" id="drawHint">Toca el mapa para añadir puntos. Toca un punto para borrarlo; arrástralo para moverlo.</p>
+      <label class="check"><input type="checkbox" id="freehand"> A mano alzada (dibuja arrastrando el dedo)</label>
       <div class="ctl">
         <span>Seguir</span>
         <div class="seg" role="group" aria-label="Cómo une los puntos">
@@ -216,7 +218,7 @@ body.layout .movable *{pointer-events:none}
         <input type="text" id="routeName" value="Mi ruta" maxlength="60" autocomplete="off">
       </div>
       <div class="row">
-        <button class="btn" id="undo" type="button">Deshacer</button>
+        <button class="btn" id="undo" type="button">Borrar último punto</button>
         <button class="btn" id="loop" type="button">Cerrar circuito</button>
         <button class="btn" id="clearDraw" type="button">Borrar</button>
       </div>
@@ -1352,7 +1354,8 @@ function syncMode() {
 }
 
 /* ---------- Dibujo de rutas ---------- */
-const D = { active: false, wps: [], legs: [], legReq: [], route: prefs.route, warn: '' };
+// legs[i] une wps[i] y wps[i+1]; fixed[i] = tramo dibujado a mano alzada (no se recalcula por carreteras)
+const D = { active: false, wps: [], legs: [], legReq: [], fixed: [], route: prefs.route, warn: '', freehand: false };
 
 function densify(coords, step) {
   const out = [];
@@ -1379,6 +1382,11 @@ async function routeOSRM(a, b, mode) {
 }
 
 async function computeLeg(i) {
+  if (D.fixed[i] && D.legs[i]) {
+    const a = D.wps[i].ll, b = D.wps[i + 1].ll, l = D.legs[i].slice();
+    l[0] = [a.lng, a.lat]; l[l.length - 1] = [b.lng, b.lat];
+    D.legs[i] = l; refreshDraw(); return;
+  }
   const a = D.wps[i].ll, b = D.wps[i + 1].ll, req = {};
   D.legReq[i] = req; D.legs[i] = null;
   let coords;
@@ -1396,8 +1404,15 @@ function wpMarker(ll) {
   const el = document.createElement('div');
   el.className = 'wp';
   const m = new maplibregl.Marker({ element: el, draggable: true }).setLngLat(ll).addTo(map);
-  const wp = { ll, m, el };
+  const wp = { ll, m, el, dragged: false };
+  m.on('dragstart', () => { wp.dragged = true; });
+  el.addEventListener('click', e => {
+    e.stopPropagation();
+    if (wp.dragged) { wp.dragged = false; return; }
+    removeWaypoint(D.wps.indexOf(wp));
+  });
   m.on('dragend', () => {
+    setTimeout(() => { wp.dragged = false; }, 50);
     wp.ll = m.getLngLat();
     const k = D.wps.indexOf(wp);
     if (k > 0) computeLeg(k - 1);
@@ -1415,8 +1430,36 @@ function styleWps() {
 function addWaypoint(ll) {
   D.wps.push(wpMarker(ll));
   styleWps();
-  if (D.wps.length > 1) { D.legs.push(null); D.legReq.push(null); computeLeg(D.wps.length - 2); }
+  if (D.wps.length > 1) { D.legs.push(null); D.legReq.push(null); D.fixed.push(false); computeLeg(D.wps.length - 2); }
   refreshDraw();
+}
+// Borra el punto k; si es intermedio, une el anterior con el siguiente
+function removeWaypoint(k) {
+  if (k < 0 || k >= D.wps.length) return;
+  const n = D.wps.length;
+  D.wps[k].m.remove();
+  D.wps.splice(k, 1);
+  if (n === 1) { D.legs = []; D.legReq = []; D.fixed = []; }
+  else if (k === 0) { D.legs.shift(); D.legReq.shift(); D.fixed.shift(); }
+  else if (k === n - 1) { D.legs.pop(); D.legReq.pop(); D.fixed.pop(); }
+  else {
+    // si los dos tramos eran a mano alzada, se juntan; si no, se recalcula
+    const joinFixed = D.fixed[k - 1] && D.fixed[k];
+    const joined = joinFixed ? D.legs[k - 1].concat(D.legs[k].slice(1)) : null;
+    D.legs.splice(k - 1, 2, joined); D.legReq.splice(k - 1, 2, null); D.fixed.splice(k - 1, 2, joinFixed);
+    if (!joinFixed) computeLeg(k - 1);
+  }
+  styleWps(); refreshDraw();
+}
+// Añade un trazo a mano alzada: un punto de llegada al final del trazo y un tramo fijo con su forma
+function addStroke(coords) {
+  if (coords.length < 2) return;
+  if (!D.wps.length) D.wps.push(wpMarker(new maplibregl.LngLat(coords[0][0], coords[0][1])));
+  const prev = D.wps[D.wps.length - 1].ll;
+  const end = coords[coords.length - 1];
+  D.wps.push(wpMarker(new maplibregl.LngLat(end[0], end[1])));
+  D.legs.push([[prev.lng, prev.lat], ...coords]); D.legReq.push(null); D.fixed.push(true);
+  styleWps(); refreshDraw();
 }
 
 async function refreshDraw() {
@@ -1440,7 +1483,7 @@ async function refreshDraw() {
 }
 
 function startDraw() {
-  D.active = true; D.wps = []; D.legs = []; D.legReq = []; D.warn = '';
+  D.active = true; D.wps = []; D.legs = []; D.legReq = []; D.fixed = []; D.warn = '';
   document.body.classList.add('drawing');
   $('viewTools').hidden = true; $('drawTools').hidden = false;
   $('trackName').textContent = 'Nueva ruta';
@@ -1451,10 +1494,11 @@ function startDraw() {
   refreshDraw();
 }
 function endDraw(keep = true) {
+  setFreehand(false);
   D.active = false;
   D.legReq = D.legReq.map(() => null);
   D.wps.forEach(w => w.m.remove());
-  D.wps = []; D.legs = [];
+  D.wps = []; D.legs = []; D.fixed = [];
   document.body.classList.remove('drawing');
   $('viewTools').hidden = false; $('drawTools').hidden = true;
   showPlayer();
@@ -1473,9 +1517,65 @@ function syncRouteButtons() {
 }
 
 map.on('click', e => {
-  if (!D.active) return;
+  if (!D.active || D.freehand) return;
   if (e.originalEvent && e.originalEvent.target.closest && e.originalEvent.target.closest('.wp')) return;
   addWaypoint(e.lngLat);
+});
+
+/* Mano alzada: con el interruptor activo, arrastrar un dedo (o el ratón) dibuja; dos dedos siguen
+   moviendo y haciendo zoom en el mapa. */
+const FH = { pts: null, id: null, touches: new Set(), raf: false };
+function setFreehand(on) {
+  D.freehand = on;
+  $('freehand').checked = on;
+  document.body.classList.toggle('freehand', on);
+  if (on) map.dragPan.disable(); else map.dragPan.enable();
+  $('drawHint').textContent = on
+    ? 'Arrastra el dedo sobre el mapa para dibujar. Con dos dedos mueves el mapa. Toca un punto para borrarlo.'
+    : 'Toca el mapa para añadir puntos. Toca un punto para borrarlo; arrástralo para moverlo.';
+  if (!on) cancelStroke();
+}
+function strokePreview() {
+  FH.raf = false;
+  if (map.getSource('stroke')) map.getSource('stroke').setData(FH.pts && FH.pts.length > 1
+    ? { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: FH.pts } } : empty);
+}
+function cancelStroke() { FH.pts = null; FH.id = null; strokePreview(); }
+function lngLatFromEvent(e) {
+  const r = map.getCanvasContainer().getBoundingClientRect();
+  return map.unproject([e.clientX - r.left, e.clientY - r.top]);
+}
+const fhBox = map.getCanvasContainer();
+fhBox.addEventListener('pointerdown', e => {
+  if (!D.active || !D.freehand || e.target.closest('.wp')) return;
+  FH.touches.add(e.pointerId);
+  if (FH.touches.size > 1) { cancelStroke(); return; }   // dos dedos: mover/zoom
+  const ll = lngLatFromEvent(e);
+  FH.id = e.pointerId; FH.pts = [[ll.lng, ll.lat]]; FH.lastXY = [e.clientX, e.clientY];
+  try { fhBox.setPointerCapture(e.pointerId); } catch (err) {}
+});
+fhBox.addEventListener('pointermove', e => {
+  if (!FH.pts || e.pointerId !== FH.id) return;
+  const dx = e.clientX - FH.lastXY[0], dy = e.clientY - FH.lastXY[1];
+  if (dx * dx + dy * dy < 36) return;                   // un punto cada 6 px
+  FH.lastXY = [e.clientX, e.clientY];
+  const ll = lngLatFromEvent(e);
+  FH.pts.push([ll.lng, ll.lat]);
+  if (!FH.raf) { FH.raf = true; requestAnimationFrame(strokePreview); }
+});
+const fhEnd = e => {
+  FH.touches.delete(e.pointerId);
+  if (!FH.pts || e.pointerId !== FH.id) return;
+  const pts = FH.pts; cancelStroke();
+  if (pts.length >= 2) addStroke(pts);
+};
+fhBox.addEventListener('pointerup', fhEnd);
+fhBox.addEventListener('pointercancel', e => { FH.touches.delete(e.pointerId); if (e.pointerId === FH.id) cancelStroke(); });
+$('freehand').addEventListener('change', e => setFreehand(e.target.checked));
+mapReady.then(() => {
+  map.addSource('stroke', { type: 'geojson', data: empty });
+  map.addLayer({ id: 'stroke', type: 'line', source: 'stroke', layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': '#f5e04a', 'line-width': 4, 'line-dasharray': [1.5, 1] } });
 });
 
 function updateExportButtons() {
@@ -1528,21 +1628,16 @@ $('shareGpx').addEventListener('click', async () => {
 });
 $('startDraw').addEventListener('click', startDraw);
 $('endDraw').addEventListener('click', () => endDraw(true));
-$('undo').addEventListener('click', () => {
-  const w = D.wps.pop(); if (!w) return;
-  w.m.remove();
-  if (D.legs.length) { D.legs.pop(); D.legReq.pop(); }
-  styleWps(); refreshDraw();
-});
+$('undo').addEventListener('click', () => removeWaypoint(D.wps.length - 1));
 $('loop').addEventListener('click', () => { if (D.wps.length >= 2) addWaypoint(D.wps[0].ll); });
 $('clearDraw').addEventListener('click', () => {
-  D.wps.forEach(w => w.m.remove()); D.wps = []; D.legs = []; D.legReq = [];
+  D.wps.forEach(w => w.m.remove()); D.wps = []; D.legs = []; D.legReq = []; D.fixed = [];
   refreshDraw();
 });
 document.querySelectorAll('[data-route]').forEach(b => b.addEventListener('click', () => {
   if (D.route === b.dataset.route) return;
   D.route = prefs.route = b.dataset.route; savePrefs(); syncRouteButtons();
-  for (let i = 0; i < D.wps.length - 1; i++) computeLeg(i);
+  for (let i = 0; i < D.wps.length - 1; i++) if (!D.fixed[i]) computeLeg(i);
   refreshDraw();
 }));
 $('routeName').addEventListener('input', () => { if (D.active) $('trackName').textContent = $('routeName').value || 'Nueva ruta'; });
