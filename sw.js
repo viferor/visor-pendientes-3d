@@ -2,11 +2,11 @@
 // - La app (HTML, librería, iconos) se guarda al instalar: abre sin conexión.
 // - Las teselas de satélite y relieve que ya has visto se guardan para reutilizarlas.
 // - El cálculo de rutas siempre va por red.
-const VERSION = 'v12';
+const VERSION = 'v13';
 const APP_CACHE = `pendientes3d-app-${VERSION}`;
 const TILE_CACHE = 'pendientes3d-tiles';
 const FONT_CACHE = 'pendientes3d-fonts';
-const MAX_TILES = 4000;
+const MAX_TILES = 8000;
 
 const APP_FILES = [
   './',

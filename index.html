@@ -367,7 +367,8 @@ const map = new maplibregl.Map({
     ],
     terrain: { source: 'dem', exaggeration: prefs.exag }
   },
-  center: [-3.38, 37.075], zoom: 12.5, pitch: 62, bearing: -30, maxPitch: 85
+  center: [-3.38, 37.075], zoom: 12.5, pitch: 62, bearing: -30, maxPitch: 85,
+  maxTileCacheSize: 1500, fadeDuration: 0, refreshExpiredTiles: false
 });
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
 class NativeFullscreen {
@@ -813,8 +814,10 @@ let P = null;
 function niceStep(range, target, opts) { return opts.find(s => range / s <= target) || opts[opts.length - 1]; }
 function sizeCanvas(c) {
   const r = c.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
-  c.width = Math.round(r.width * dpr); c.height = Math.round(r.height * dpr);
-  const ctx = c.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr), ctx = c.getContext('2d');
+  if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
+  else { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, W, H); }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   return { ctx, w: r.width, h: r.height };
 }
 
@@ -883,11 +886,11 @@ function idxFromX(clientX) {
   const x = Math.min(Math.max(clientX - r.left, P.pad.l), P.pad.l + P.W);
   return idxAt((x - P.pad.l) / P.W * P.total);
 }
-function drawMarker(i) {
+function drawMarker(i, noMap) {
   if (!S.pts || i == null) return null;
   if (!P || $('profile').hidden) {
     const q = S.pts[i];
-    if (map.getSource('hover')) map.getSource('hover').setData({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [q.lon, q.lat] } });
+    if (!noMap && map.getSource('hover')) map.getSource('hover').setData({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [q.lon, q.lat] } });
     updateLive(i);
     return q;
   }
@@ -905,7 +908,7 @@ function drawMarker(i) {
   updateLive(i);
   const tw = tip.offsetWidth, tx = P.X(p.d);
   tip.style.left = Math.min(Math.max(tx - tw / 2, 4), w - tw - 4) + 'px';
-  if (map.getSource('hover')) map.getSource('hover').setData({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [p.lon, p.lat] } });
+  if (!noMap && map.getSource('hover')) map.getSource('hover').setData({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [p.lon, p.lat] } });
   return p;
 }
 function hoverAt(clientX) {
@@ -970,11 +973,74 @@ over.addEventListener('pointerup', endDrag);
 over.addEventListener('pointercancel', endDrag);
 over.addEventListener('pointerleave', () => { if (!dragging) hoverOut(); });
 
+/* ---------- Precarga del mapa a lo largo de la ruta ---------- */
+// Pide por adelantado las teselas de satélite (y de carreteras si el mapa es híbrido) y de relieve
+// en un pasillo alrededor de la ruta, en el orden en que se van a recorrer. El service worker las
+// guarda, así que el vuelo no se queda esperando y la siguiente vez sale de la caché.
+const PREF = { key: null, queue: [], running: 0, done: 0, total: 0, seen: new Set() };
+function tileXY(lon, lat, z) {
+  const n = 2 ** z, s = Math.sin(lat * Math.PI / 180);
+  return [Math.floor((lon + 180) / 360 * n), Math.floor((0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n)];
+}
+function tileUrls(z, x, y) {
+  const urls = [];
+  if (z >= 12) urls.push(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`);
+  if (z >= 12 && prefs.basemap === 'hybrid') {
+    urls.push(`https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/${z}/${y}/${x}`,
+              `https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/${z}/${y}/${x}`);
+  }
+  if (z <= 14) urls.push(`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`);
+  return urls;
+}
+function prefetchRoute(fromIdx, backwards) {
+  if (!S.pts) return;
+  const key = S.pts.length + ':' + S.pts[0].lat + ':' + prefs.basemap;
+  if (PREF.key !== key) { PREF.key = key; PREF.seen = new Set(); PREF.done = 0; PREF.total = 0; }
+  // Pasillo: más ancho en zooms bajos, que son los que se ven hacia el horizonte con la vista inclinada
+  const levels = [[16, 1], [15, 1], [14, 1], [13, 2], [12, 2]];
+  const order = [], pts = S.pts, step = 150;
+  const idxs = [];
+  for (let d = 0; d <= pts[pts.length - 1].d; d += step) idxs.push(idxAt(d));
+  const start = Math.max(0, idxs.findIndex(i => i >= fromIdx));
+  const seq = backwards ? idxs.slice(0, start + 1).reverse() : idxs.slice(start);
+  for (const i of seq) {
+    const p = pts[i];
+    for (const [z, r] of levels) {
+      const [tx, ty] = tileXY(p.lon, p.lat, z);
+      for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) {
+        for (const u of tileUrls(z, tx + dx, ty + dy)) if (!PREF.seen.has(u)) { PREF.seen.add(u); order.push(u); }
+      }
+    }
+  }
+  PREF.queue = order.concat(PREF.queue);
+  PREF.total += order.length;
+  pumpPrefetch();
+}
+function pumpPrefetch() {
+  while (PREF.running < 6 && PREF.queue.length) {
+    const u = PREF.queue.shift();
+    PREF.running++;
+    fetch(u, { mode: 'cors', credentials: 'omit' }).catch(() => {}).finally(() => {
+      PREF.running--; PREF.done++;
+      if (PREF.total > 20 && (PREF.done % 25 === 0 || !PREF.queue.length)) {
+        const pc = Math.min(100, Math.round(PREF.done / PREF.total * 100));
+        setStatus(pc < 100 ? `Guardando el mapa de la ruta… ${pc} %` : 'Mapa de la ruta guardado: la próxima vez cargará al instante.');
+      }
+      pumpPrefetch();
+    });
+  }
+}
+
 /* ---------- Reproductor (vuelo tipo Strava) ---------- */
 // 1x = velocidad real. Con hora en el GPX avanza según el tiempo en movimiento (cada tramo
 // a la velocidad a la que se hizo); sin hora (rutas dibujadas), a 20 km/h constantes.
 const PLAY = { on: false, x: 0, speed: 1, last: 0, brg: null, labelsAt: 0 };
 const NOMINAL_MS = 20 / 3.6;
+PLAY.dot = (() => {
+  const el = document.createElement('div');
+  el.style.cssText = 'width:16px;height:16px;border-radius:50%;background:#fff;border:3px solid #111;box-shadow:0 1px 6px rgba(0,0,0,.6)';
+  return new maplibregl.Marker({ element: el });
+})();
 function playAxis() { const q = S.pts[S.pts.length - 1]; return S.hasTime ? q.mt : q.d; }
 function axisOf(p) { return S.hasTime ? p.mt : p.d; }
 function idxAtAxis(x) {
@@ -1009,14 +1075,17 @@ function playFrame(now) {
   const span = axisOf(b) - axisOf(a), f = span > 0 ? Math.min(1, (PLAY.x - axisOf(a)) / span) : 0;
   const lon = a.lon + (b.lon - a.lon) * f, lat = a.lat + (b.lat - a.lat) * f;
   S.sel = i;
-  drawMarker(i);
-  if (map.getSource('hover')) map.getSource('hover').setData({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [lon, lat] } });
+  PLAY.dot.setLngLat([lon, lat]);
+  if (now - (PLAY.uiAt || 0) > 100) {      // perfil, panel y barra: 10 veces por segundo bastan
+    PLAY.uiAt = now;
+    drawMarker(i, true);
+    $('playProgress').value = PLAY.x / end * 1000;
+  }
   const target = headingAt(i);
   PLAY.brg = PLAY.brg == null ? target : PLAY.brg + angleDiff(PLAY.brg, target) * Math.min(1, dt * 1.2);
   PLAY.moving = true;
   map.jumpTo({ center: [lon, lat], bearing: PLAY.brg });
   PLAY.moving = false;
-  $('playProgress').value = PLAY.x / end * 1000;
   if ((PLAY.speed > 0 && PLAY.x >= end) || (PLAY.speed < 0 && PLAY.x <= 0)) { pausePlay(true); return; }
   requestAnimationFrame(playFrame);
 }
@@ -1030,11 +1099,17 @@ function startPlay() {
   document.body.classList.add('playing');
   $('playBtn').textContent = '❚❚'; $('playBtn').setAttribute('aria-label', 'Pausa');
   $('live').hidden = false;
+  if (map.getSource('hover')) map.getSource('hover').setData(empty);
+  const q0 = S.pts[idxAtAxis(PLAY.x)];
+  PLAY.dot.setLngLat([q0.lon, q0.lat]).addTo(map);
+  prefetchRoute(idxAtAxis(PLAY.x), PLAY.speed < 0);
   map.easeTo({ pitch: 65, zoom: Math.max(map.getZoom(), 15), duration: 800 });
   setTimeout(() => { if (PLAY.on) { PLAY.last = performance.now(); requestAnimationFrame(playFrame); } }, 820);
 }
 function pausePlay(ended) {
   PLAY.on = false;
+  PLAY.dot.remove();
+  if (S.sel != null) drawMarker(S.sel);
   document.body.classList.remove('playing');
   $('playBtn').textContent = ended ? '↺' : '▶';
   $('playBtn').setAttribute('aria-label', ended ? 'Volver a reproducir' : 'Reproducir');
