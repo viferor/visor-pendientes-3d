@@ -9,5 +9,9 @@
     "SystemBars": {
       "insetsHandling": "css"
     }
+  },
+  "server": {
+    "url": "https://visor-pendientes-3d.vercel.app",
+    "errorPath": "offline.html"
   }
 }

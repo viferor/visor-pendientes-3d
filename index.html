@@ -1065,7 +1065,8 @@ if (NATIVE) {
   $('exportGpx').textContent = 'Guardar GPX';
   document.querySelector('#body .hint:last-child').textContent = 'Arrastra con dos dedos para girar e inclinar la vista.';
 }
-if (!NATIVE && 'serviceWorker' in navigator && location.protocol.startsWith('http')) {
+// También en la app Android cuando carga la web desde Vercel (no desde la copia local)
+if ('serviceWorker' in navigator && location.protocol.startsWith('http') && !(NATIVE && location.hostname === 'localhost')) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
 }
 let installEvt = null;

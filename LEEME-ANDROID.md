@@ -25,14 +25,18 @@ La primera vez, el script crea dos archivos:
 
 Los dos archivos están en `.gitignore`: nunca se suben a GitHub.
 
-## Después de cambiar la app
+## Cuándo hay que recompilar
+
+La app carga la web publicada en Vercel (`server.url` en `capacitor.config.json`). Por eso **los cambios en `index.html` no necesitan un APK nuevo**: basta con subirlos a `main` y Vercel los publica. La app los muestra la próxima vez que se abra.
+
+Solo hay que volver a compilar si cambia algo de Android: el icono, el nombre, los permisos, los plugins o `capacitor.config.json`. En ese caso:
 
 ```
 git pull
 scripts\compilar-apk.bat
 ```
 
-Si tienes Node.js, el script copia la web actual (`index.html`, `lib`, `icons`) dentro del proyecto Android antes de compilar. Sin Node.js, usa la copia que ya esté en `android\app\src\main\assets\public`.
+La primera vez que se abre, la app necesita conexión. Si no la hay, muestra `offline.html` con un botón para reintentar.
 
 ## Google Play
 
