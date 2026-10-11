@@ -197,12 +197,18 @@ body.drawing #map canvas{cursor:crosshair}
           <button type="button" data-mode="gpx" id="modeGpx">Del GPX</button>
           <button type="button" data-mode="terrain" id="modeTer">Del terreno</button>
         </div>
+        <span>Mapa</span>
+        <div class="seg" role="group" aria-label="Tipo de mapa">
+          <button type="button" data-basemap="sat">Satélite</button>
+          <button type="button" data-basemap="hybrid">Híbrido</button>
+        </div>
         <label for="exag">Relieve</label>
         <input id="exag" type="range" min="1" max="3" step="0.1" value="1.5">
       </div>
       <div class="sub">
         <label class="check"><input type="checkbox" id="showLabels" checked> Mostrar % sobre la línea</label>
         <label class="check"><input type="checkbox" id="showProfile" checked> Mostrar perfil de altitud</label>
+        <label class="check" id="followRow"><input type="checkbox" id="followProfile" checked> Llevar la vista al punto marcado en el perfil</label>
         <div class="ctl" id="profileAlphaRow">
           <label for="profileAlpha">Opacidad</label>
           <input id="profileAlpha" type="range" min="0" max="100" step="5" value="86">
@@ -244,7 +250,7 @@ if (NATIVE) {
 
 /* ---------- Preferencias guardadas ---------- */
 const PREFS_KEY = 'pendientes3d.prefs';
-const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto' },
+const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true },
   (() => { try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch (e) { return {}; } })());
 function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {} }
 
@@ -280,6 +286,17 @@ const map = new maplibregl.Map({
         tileSize: 256, maxzoom: 19,
         attribution: 'Imágenes © Esri, Maxar, Earthstar Geographics'
       },
+      roads: {
+        type: 'raster',
+        tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}'],
+        tileSize: 256, maxzoom: 19,
+        attribution: 'Carreteras y nombres © Esri, HERE, Garmin, © OpenStreetMap'
+      },
+      places: {
+        type: 'raster',
+        tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}'],
+        tileSize: 256, maxzoom: 19
+      },
       dem: {
         type: 'raster-dem',
         tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
@@ -287,7 +304,11 @@ const map = new maplibregl.Map({
         attribution: 'Relieve: Terrain Tiles (Mapzen / AWS) · Rutas: OSRM / FOSSGIS · © OpenStreetMap'
       }
     },
-    layers: [{ id: 'sat', type: 'raster', source: 'sat' }],
+    layers: [
+      { id: 'sat', type: 'raster', source: 'sat' },
+      { id: 'roads', type: 'raster', source: 'roads', layout: { visibility: prefs.basemap === 'hybrid' ? 'visible' : 'none' } },
+      { id: 'places', type: 'raster', source: 'places', layout: { visibility: prefs.basemap === 'hybrid' ? 'visible' : 'none' } }
+    ],
     terrain: { source: 'dem', exaggeration: prefs.exag }
   },
   center: [-3.38, 37.075], zoom: 12.5, pitch: 62, bearing: -30, maxPitch: 85
@@ -510,6 +531,7 @@ async function analyze() {
   S.L = $('seglen').value === 'auto' ? auto : +$('seglen').value;
   $('seglen').options[0].textContent = `Automático (${auto >= 1000 ? auto / 1000 + ' km' : auto + ' m'})`;
 
+  if (!S.pts || S.pts.length !== pts.length) S.sel = null;
   S.pts = pts;
   S.segs = buildSegments(pts, S.L);
   render();
@@ -519,7 +541,7 @@ async function analyze() {
 
 /* ---------- Pintado ---------- */
 function clearTrack() {
-  S.pts = S.segs = null;
+  S.pts = S.segs = null; S.sel = null;
   if (map.getSource('route')) map.getSource('route').setData(empty);
   clearLabels();
   $('stats').innerHTML = '';
@@ -648,6 +670,7 @@ function drawProfile() {
   if (shadow) { ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 3; }
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.6; ctx.stroke();
   ctx.shadowBlur = 0;
+  if (S.sel != null && S.sel < pts.length) drawMarker(S.sel);
 }
 
 function idxAt(d) {
@@ -657,11 +680,15 @@ function idxAt(d) {
 }
 function segAt(i) { return S.segs.find(g => i >= g.i0 && i <= g.i1) || S.segs[S.segs.length - 1]; }
 
-function hoverAt(clientX) {
-  if (!S.pts || !P) return null;
+// Punto marcado en el perfil (S.sel): queda fijo al soltar; el paso del ratón solo lo muestra
+function idxFromX(clientX) {
   const r = over.getBoundingClientRect();
   const x = Math.min(Math.max(clientX - r.left, P.pad.l), P.pad.l + P.W);
-  const i = idxAt((x - P.pad.l) / P.W * P.total), p = S.pts[i], g = segAt(i);
+  return idxAt((x - P.pad.l) / P.W * P.total);
+}
+function drawMarker(i) {
+  if (!S.pts || !P || i == null) return null;
+  const p = S.pts[i], g = segAt(i);
   const { ctx, w } = sizeCanvas(over);
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(P.X(p.d) + 0.5, P.pad.t); ctx.lineTo(P.X(p.d) + 0.5, P.pad.t + P.H); ctx.stroke();
@@ -670,17 +697,68 @@ function hoverAt(clientX) {
   tip.innerHTML = `km <b>${(p.d / 1000).toFixed(2)}</b> · <b>${fmtInt(p.e)}</b> m · <b style="color:${g.color}">${fmtGrade(g.g)}</b>`;
   const tw = tip.offsetWidth, tx = P.X(p.d);
   tip.style.left = Math.min(Math.max(tx - tw / 2, 4), w - tw - 4) + 'px';
-  map.getSource('hover').setData({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [p.lon, p.lat] } });
+  if (map.getSource('hover')) map.getSource('hover').setData({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [p.lon, p.lat] } });
   return p;
 }
+function hoverAt(clientX) {
+  if (!S.pts || !P) return null;
+  return drawMarker(idxFromX(clientX));
+}
 function hoverOut() {
+  if (S.sel != null && S.pts && P) { drawMarker(S.sel); return; }
   tip.hidden = true;
   if (!$('profile').hidden) sizeCanvas(over);
   if (map.getSource('hover')) map.getSource('hover').setData(empty);
 }
-over.addEventListener('pointermove', e => hoverAt(e.clientX));
-over.addEventListener('pointerleave', hoverOut);
-over.addEventListener('click', e => { const p = hoverAt(e.clientX); if (p) map.easeTo({ center: [p.lon, p.lat], zoom: Math.max(map.getZoom(), 15), duration: 900 }); });
+function clearSelection() { S.sel = null; hoverOut(); }
+
+// Rumbo de la marcha en el punto i (de 80 m antes a 200 m después)
+function headingAt(i) {
+  const pts = S.pts, d = pts[i].d;
+  const a = pts[idxAt(Math.max(0, d - 80))], b = pts[idxAt(Math.min(P.total, d + 200))];
+  if (a === b) return map.getBearing();
+  const toR = Math.PI / 180, y = Math.sin((b.lon - a.lon) * toR) * Math.cos(b.lat * toR);
+  const x = Math.cos(a.lat * toR) * Math.sin(b.lat * toR) - Math.sin(a.lat * toR) * Math.cos(b.lat * toR) * Math.cos((b.lon - a.lon) * toR);
+  return Math.atan2(y, x) / toR;
+}
+// Coloca la cámara detrás del punto, mirando en el sentido de la marcha
+function flyToIdx(i, quick) {
+  if (!prefs.follow || !S.pts) return;
+  const p = S.pts[i];
+  map.easeTo({
+    center: [p.lon, p.lat],
+    bearing: headingAt(i),
+    pitch: Math.max(map.getPitch(), 60),
+    zoom: quick ? map.getZoom() : Math.max(map.getZoom(), 15),
+    duration: quick ? 250 : 1000,
+    essential: true
+  });
+}
+
+let dragging = false, rafPending = false, lastX = 0;
+function selectAt(clientX, quick) {
+  if (!S.pts || !P) return;
+  S.sel = idxFromX(clientX);
+  drawMarker(S.sel);
+  flyToIdx(S.sel, quick);
+}
+over.addEventListener('pointerdown', e => {
+  if (!S.pts || !P) return;
+  dragging = true;
+  try { over.setPointerCapture(e.pointerId); } catch (err) {}
+  selectAt(e.clientX, false);
+});
+over.addEventListener('pointermove', e => {
+  if (!dragging) { hoverAt(e.clientX); return; }
+  lastX = e.clientX;
+  if (rafPending) return;
+  rafPending = true;
+  requestAnimationFrame(() => { rafPending = false; selectAt(lastX, true); });
+});
+const endDrag = e => { dragging = false; try { over.releasePointerCapture(e.pointerId); } catch (err) {} };
+over.addEventListener('pointerup', endDrag);
+over.addEventListener('pointercancel', endDrag);
+over.addEventListener('pointerleave', () => { if (!dragging) hoverOut(); });
 
 /* ---------- Cámara ---------- */
 function fitRoute(animate = true) {
@@ -707,7 +785,7 @@ async function loadTrack(name, pts) {
   syncMode();
   $('trackName').textContent = name || 'Recorrido sin nombre';
   $('routeName').value = name || 'Mi ruta';
-  hoverOut();
+  clearSelection();
   try {
     if (await analyze()) fitRoute();
   } catch (err) { setStatus(err.message, true); }
@@ -926,6 +1004,7 @@ function applyProfilePrefs() {
   $('profile').hidden = !prefs.profile;
   document.body.classList.toggle('no-profile', !prefs.profile);
   $('profileAlphaRow').hidden = !prefs.profile;
+  $('followRow').hidden = !prefs.profile;
   $('profileAlpha').value = prefs.alpha;
   const a = prefs.alpha / 100;
   document.documentElement.style.setProperty('--profile-alpha', a);
@@ -933,8 +1012,20 @@ function applyProfilePrefs() {
   $('profile').style.backdropFilter = blur; $('profile').style.webkitBackdropFilter = blur;
   drawProfile();
 }
-$('showProfile').addEventListener('change', e => { prefs.profile = e.target.checked; savePrefs(); applyProfilePrefs(); if (!prefs.profile) hoverOut(); });
+$('showProfile').addEventListener('change', e => { prefs.profile = e.target.checked; savePrefs(); applyProfilePrefs(); if (!prefs.profile) clearSelection(); });
 $('profileAlpha').addEventListener('input', e => { prefs.alpha = +e.target.value; savePrefs(); applyProfilePrefs(); });
+
+/* ---------- Tipo de mapa y seguimiento ---------- */
+function applyBasemap() {
+  const vis = prefs.basemap === 'hybrid' ? 'visible' : 'none';
+  for (const id of ['roads', 'places']) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis);
+  document.querySelectorAll('[data-basemap]').forEach(b => b.setAttribute('aria-pressed', b.dataset.basemap === prefs.basemap));
+}
+document.querySelectorAll('[data-basemap]').forEach(b => b.addEventListener('click', () => {
+  prefs.basemap = b.dataset.basemap; savePrefs(); applyBasemap();
+}));
+$('followProfile').checked = prefs.follow;
+$('followProfile').addEventListener('change', e => { prefs.follow = e.target.checked; savePrefs(); });
 
 /* ---------- Otros controles ---------- */
 $('file').addEventListener('change', e => { openFile(e.target.files[0]); e.target.value = ''; });
@@ -995,6 +1086,7 @@ if ('launchQueue' in window) {
 
 /* ---------- Arranque ---------- */
 applyProfilePrefs();
+applyBasemap();
 syncRouteButtons();
 (function demo() {
   // Ejemplo: Pradollano → Pico Veleta (trazado aproximado, altitudes del terreno)
