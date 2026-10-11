@@ -564,10 +564,13 @@ function render() {
     }))
   });
 
+  // Desnivel con un suavizado fijo de 25 m, para que no cambie según el tramo elegido
+  // (comparado con Strava en una ruta de MTB: 876 m frente a 867 m)
+  const eg = smooth(pts, 25);
   let up = 0, down = 0, max = -Infinity, min = Infinity;
   for (let i = 0; i < pts.length; i++) {
-    if (i) { const de = pts[i].e - pts[i - 1].e; de > 0 ? up += de : down -= de; }
-    max = Math.max(max, pts[i].e); min = Math.min(min, pts[i].e);
+    if (i) { const de = eg[i] - eg[i - 1]; de > 0 ? up += de : down -= de; }
+    max = Math.max(max, eg[i]); min = Math.min(min, eg[i]);
   }
   // Pendiente máxima: la rampa más dura en 50 m de recorrido, sea cual sea el tramo elegido
   let gmax = -Infinity;
