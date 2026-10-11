@@ -62,12 +62,25 @@
           "value": "public, max-age=86400"
         }
       ]
+    },
+    {
+      "source": "/catastro/Cartografia/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=604800"
+        }
+      ]
     }
   ],
   "rewrites": [
     {
       "source": "/wmt/:path*",
       "destination": "https://tile.waymarkedtrails.org/:path*"
+    },
+    {
+      "source": "/catastro/:path*",
+      "destination": "https://ovc.catastro.meh.es/:path*"
     }
   ]
 }

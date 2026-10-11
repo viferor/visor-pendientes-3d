@@ -3,7 +3,7 @@
 // - Las teselas de satélite y relieve que ya has visto se guardan para reutilizarlas.
 // - Los mapas de las rutas guardadas para sin cobertura van en una caché aparte que no se recorta.
 // - El cálculo de rutas siempre va por red.
-const VERSION = 'v24';
+const VERSION = 'v25';
 const APP_CACHE = `pendientes3d-app-${VERSION}`;
 const TILE_CACHE = 'pendientes3d-tiles';
 const FONT_CACHE = 'pendientes3d-fonts';
@@ -36,7 +36,7 @@ self.addEventListener('activate', e => {
 });
 
 const isTile = url =>
-  (url.origin === self.location.origin && url.pathname.startsWith('/wmt/')) ||
+  (url.origin === self.location.origin && (url.pathname.startsWith('/wmt/') || url.pathname.startsWith('/catastro/Cartografia/'))) ||
   url.hostname === 'server.arcgisonline.com' ||
   url.hostname.endsWith('.tile-cyclosm.openstreetmap.fr') ||
   url.hostname === 'tile.waymarkedtrails.org' ||

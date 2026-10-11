@@ -77,6 +77,14 @@ details.settings[open] summary{margin-bottom:10px}
 .ctl{display:grid;grid-template-columns:64px minmax(0,1fr);align-items:center;gap:9px 10px}
 .stack{display:flex;flex-direction:column;gap:6px}
 .layers{display:flex;flex-direction:column;gap:6px}
+.cat-pop .maplibregl-popup-content{background:var(--panel-solid);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px 26px 8px 12px;font-size:13px}
+.cat-pop .maplibregl-popup-tip{border-top-color:var(--panel-solid);border-bottom-color:var(--panel-solid)}
+.cat-pop .maplibregl-popup-close-button{color:var(--muted);font-size:18px}
+.cat-pop p{margin:0 0 5px}
+.cat-pop .ok{color:#8fe36b;font-weight:600}
+.cat-pop .warn{color:#f7a531;font-weight:600}
+.cat-pop .ldt,.cat-pop .ref{color:var(--muted);font-size:12px}
+.cat-pop a{color:var(--paint)}
 .offline-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
 .offline-list li{display:flex;align-items:center;gap:8px;font-size:13px;padding:6px 8px;border:1px solid var(--line);border-radius:6px}
 .offline-list li span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -294,7 +302,10 @@ body.layout .movable *{pointer-events:none}
           <label class="check"><input type="checkbox" id="ovLite"> Sendas y caminos (CyclOSM lite)</label>
           <label class="check"><input type="checkbox" id="ovMtb"> Rutas MTB señalizadas</label>
           <label class="check"><input type="checkbox" id="ovHike"> Rutas de senderismo (GR, PR, SL)</label>
+          <label class="check"><input type="checkbox" id="ovCat"> Parcelas del Catastro</label>
         </div>
+        <label for="catAlpha" id="catAlphaLbl">Catastro</label>
+        <input id="catAlpha" type="range" min="10" max="100" step="5" value="80" title="Opacidad de la capa del Catastro">
         <label for="exag">Relieve</label>
         <input id="exag" type="range" min="1" max="3" step="0.1" value="1.5">
       </div>
@@ -388,7 +399,9 @@ const PREFS_KEY = 'pendientes3d.prefs';
 // Capas de Waymarked Trails a través de Vercel (/wmt → tile.waymarkedtrails.org): así el navegador
 // puede usarlas en el mapa aunque su servidor no envíe cabeceras CORS. En local, directo.
 const WMT = /\.vercel\.app$/.test(location.hostname) ? location.origin + '/wmt' : 'https://tile.waymarkedtrails.org';
-const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true, arrowStep: 'auto', playAlpha: 86, ovMtb: false, ovHike: false, ovLite: false, cyclosmAlpha: 100, ovNames: true },
+// Catastro (Dirección General del Catastro) también a través de Vercel, por el mismo motivo
+const CAT = /\.vercel\.app$/.test(location.hostname) ? location.origin + '/catastro' : 'https://ovc.catastro.meh.es';
+const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true, arrowStep: 'auto', playAlpha: 86, ovMtb: false, ovHike: false, ovLite: false, cyclosmAlpha: 100, ovNames: true, ovCat: false, catAlpha: 80 },
   (() => { try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch (e) { return {}; } })());
 function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {} }
 
@@ -449,6 +462,13 @@ const map = new maplibregl.Map({
         tileSize: 256, maxzoom: 18,
         attribution: 'CyclOSM · © colaboradores de OpenStreetMap'
       },
+      catastro: {
+        type: 'raster',
+        tiles: [CAT + '/Cartografia/WMS/ServidorWMS.aspx?SERVICE=WMS&REQUEST=GetMap&VERSION=1.1.1&LAYERS=Catastro&STYLES=' +
+                '&SRS=EPSG:3857&BBOX={bbox-epsg-3857}&WIDTH=512&HEIGHT=512&FORMAT=image/png&TRANSPARENT=TRUE'],
+        tileSize: 512, minzoom: 13, maxzoom: 19,
+        attribution: 'Parcelas: © Dirección General del Catastro'
+      },
       wmMtb: {
         type: 'raster', tiles: [WMT + '/mtb/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 18,
         attribution: 'Rutas señalizadas: Waymarked Trails (CC BY-SA)'
@@ -471,6 +491,7 @@ const map = new maplibregl.Map({
       { id: 'cyclosm', type: 'raster', source: 'cyclosm', paint: { 'raster-opacity': prefs.cyclosmAlpha / 100 }, layout: { visibility: prefs.basemap === 'cyclosm' ? 'visible' : 'none' } },
       { id: 'cyclosmLite', type: 'raster', source: 'cyclosmLite', layout: { visibility: prefs.ovLite ? 'visible' : 'none' } },
       { id: 'wmHike', type: 'raster', source: 'wmHike', paint: { 'raster-opacity': 0.9 }, layout: { visibility: prefs.ovHike ? 'visible' : 'none' } },
+      { id: 'catastro', type: 'raster', source: 'catastro', minzoom: 13, paint: { 'raster-opacity': prefs.catAlpha / 100 }, layout: { visibility: prefs.ovCat ? 'visible' : 'none' } },
       { id: 'wmMtb', type: 'raster', source: 'wmMtb', paint: { 'raster-opacity': 0.95 }, layout: { visibility: prefs.ovMtb ? 'visible' : 'none' } },
       // Pistas y sendas de OpenStreetMap con su nombre, nítidas sobre el satélite
       { id: 'osmTracks', type: 'line', source: 'ofm', 'source-layer': 'transportation', minzoom: 12,
@@ -1920,11 +1941,15 @@ function applyBasemap() {
                  cyclosmLite: prefs.ovLite && bm !== 'cyclosm', wmMtb: prefs.ovMtb, wmHike: prefs.ovHike,
                  // con CyclOSM a tope ya hay nombres; las líneas se ocultan para no duplicar
                  osmTracks: prefs.ovNames && bm !== 'cyclosm', osmPaths: prefs.ovNames && bm !== 'cyclosm',
-                 osmNames: prefs.ovNames && !(bm === 'cyclosm' && prefs.cyclosmAlpha >= 100), osmPeaks: prefs.ovNames };
+                 osmNames: prefs.ovNames && !(bm === 'cyclosm' && prefs.cyclosmAlpha >= 100), osmPeaks: prefs.ovNames,
+                 catastro: prefs.ovCat };
   for (const id in want) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', v(want[id]));
   if (map.getLayer('cyclosm')) map.setPaintProperty('cyclosm', 'raster-opacity', prefs.cyclosmAlpha / 100);
   $('ovMtb').checked = prefs.ovMtb; $('ovHike').checked = prefs.ovHike; $('ovLite').checked = prefs.ovLite; $('ovNames').checked = prefs.ovNames;
   $('cyclosmAlpha').value = prefs.cyclosmAlpha;
+  if (map.getLayer('catastro')) map.setPaintProperty('catastro', 'raster-opacity', prefs.catAlpha / 100);
+  $('ovCat').checked = prefs.ovCat; $('catAlpha').value = prefs.catAlpha;
+  $('catAlpha').hidden = $('catAlphaLbl').hidden = !prefs.ovCat;
   $('cyclosmAlpha').hidden = $('cyclosmAlphaLbl').hidden = bm !== 'cyclosm';
   $('ovLite').closest('label').hidden = bm === 'cyclosm';
   document.querySelectorAll('[data-basemap]').forEach(b => b.setAttribute('aria-pressed', b.dataset.basemap === prefs.basemap));
@@ -1935,6 +1960,48 @@ document.querySelectorAll('[data-basemap]').forEach(b => b.addEventListener('cli
 $('ovMtb').addEventListener('change', e => { prefs.ovMtb = e.target.checked; savePrefs(); applyBasemap(); });
 $('ovLite').addEventListener('change', e => { prefs.ovLite = e.target.checked; savePrefs(); applyBasemap(); });
 $('ovNames').addEventListener('change', e => { prefs.ovNames = e.target.checked; savePrefs(); applyBasemap(); });
+$('ovCat').addEventListener('change', e => {
+  prefs.ovCat = e.target.checked; savePrefs(); applyBasemap();
+  if (prefs.ovCat) setStatus(map.getZoom() < 14 ? 'Acércate más para ver las parcelas. Toca el mapa para consultar una parcela.' : 'Toca el mapa para consultar una parcela.');
+});
+$('catAlpha').addEventListener('input', e => { prefs.catAlpha = +e.target.value; savePrefs(); applyBasemap(); });
+
+/* ---------- Consulta de parcela del Catastro ---------- */
+// En rústico la referencia es: provincia(2) municipio(3) sección(1 letra) polígono(3) parcela(5).
+// Las parcelas 9000+ son de dominio público: caminos, arroyos, carreteras, vías pecuarias…
+let catPopup = null;
+async function queryCatastro(ll) {
+  const url = `${CAT}/ovcservweb/OVCSWLocalizacionRC/OVCCoordenadas.asmx/Consulta_RCCOOR?SRS=EPSG:4326&Coordenada_X=${ll.lng.toFixed(6)}&Coordenada_Y=${ll.lat.toFixed(6)}`;
+  if (catPopup) catPopup.remove();
+  catPopup = new maplibregl.Popup({ closeButton: true, maxWidth: '280px', className: 'cat-pop' }).setLngLat(ll).setHTML('<p>Consultando el Catastro…</p>').addTo(map);
+  try {
+    const r = await fetch(url);
+    const doc = new DOMParser().parseFromString(await r.text(), 'text/xml');
+    const t = tag => { const n = doc.getElementsByTagName(tag)[0]; return n ? n.textContent.trim() : ''; };
+    const rc = t('pc1') + t('pc2'), ldt = t('ldt'), err = t('des');
+    if (!rc) { catPopup.setHTML(`<p>${err || 'No hay parcela catastral en este punto.'}</p>`); return; }
+    let html = `<p class="ref">Ref. catastral <b>${rc}</b></p>`;
+    if (/^[0-9]{5}[A-Z]/.test(rc)) {
+      const pol = parseInt(rc.slice(6, 9), 10), parc = parseInt(rc.slice(9, 14), 10);
+      html += `<p>Polígono <b>${pol}</b> · Parcela <b>${parc}</b></p>`;
+      html += parc >= 9000
+        ? '<p class="ok">● Dominio público: camino, arroyo, carretera o vía pecuaria.</p>'
+        : '<p class="warn">● Parcela particular o patrimonial. Si hay un camino aquí, puede ser privado: compruébalo.</p>';
+    } else {
+      html += '<p>Suelo urbano.</p>';
+    }
+    if (ldt) html += `<p class="ldt">${ldt.replace(/</g, '&lt;')}</p>`;
+    html += `<p><a href="https://www1.sedecatastro.gob.es/CYCBienInmueble/OVCConCiud.aspx?UrbRus=&RefC=${encodeURIComponent(rc.slice(0, 14))}" target="_blank" rel="noopener">Ver en la Sede del Catastro</a></p>`;
+    catPopup.setHTML(html);
+  } catch (e) {
+    catPopup.setHTML('<p>No se pudo consultar el Catastro. Revisa la conexión.</p>');
+  }
+}
+map.on('click', e => {
+  if (!prefs.ovCat || D.active || PLAY.on || document.body.classList.contains('layout')) return;
+  if (e.originalEvent && e.originalEvent.target.closest && e.originalEvent.target.closest('.maplibregl-marker, .maplibregl-popup')) return;
+  queryCatastro(e.lngLat);
+});
 $('cyclosmAlpha').addEventListener('input', e => { prefs.cyclosmAlpha = +e.target.value; savePrefs(); applyBasemap(); });
 $('ovHike').addEventListener('change', e => { prefs.ovHike = e.target.checked; savePrefs(); applyBasemap(); });
 $('showArrows').checked = prefs.arrows;
