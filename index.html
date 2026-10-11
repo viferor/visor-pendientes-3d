@@ -146,6 +146,13 @@ body.drawing #map canvas{cursor:crosshair}
   body.playing #panel{display:none}
 }
 
+/* Modo mover controles */
+#layoutBar{position:fixed;left:50%;transform:translateX(-50%);top:calc(10px + var(--safe-area-inset-top, env(safe-area-inset-top,0px)));z-index:20;
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:center;padding:8px 12px;background:var(--panel-solid);
+  border:1px solid var(--paint);border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,.5);max-width:calc(100% - 24px);font-size:13.5px}
+body.layout .movable{outline:2px dashed var(--paint);outline-offset:3px;cursor:move;touch-action:none;pointer-events:auto}
+body.layout .movable *{pointer-events:none}
+
 #drop{position:absolute;inset:0;z-index:10;display:grid;place-items:center;background:rgba(13,18,16,.7);
   border:3px dashed var(--paint);font:700 32px var(--display);text-transform:uppercase;color:var(--paint)}
 
@@ -264,6 +271,9 @@ body.drawing #map canvas{cursor:crosshair}
       <h2>Pendiente</h2>
       <ul id="legend"></ul>
     </div>
+    <div class="row">
+      <button class="btn" id="layoutBtn" type="button">Mover controles</button>
+    </div>
     <button class="btn" id="install" type="button" hidden>Instalar la app</button>
     <p class="hint">Arrastra un .gpx sobre el mapa para abrirlo. Clic derecho y arrastrar (o dos dedos) para girar e inclinar la vista.</p>
   </div>
@@ -293,6 +303,12 @@ body.drawing #map canvas{cursor:crosshair}
   </div>
 </div>
 <div id="live" hidden aria-live="off"></div>
+
+<div id="layoutBar" hidden>
+  <span>Arrastra los controles adonde quieras</span>
+  <button type="button" class="btn" id="layoutReset">Restablecer</button>
+  <button type="button" class="btn primary" id="layoutDone">Listo</button>
+</div>
 
 <div id="drop" hidden>Suelta el GPX aquí</div>
 
@@ -904,13 +920,18 @@ function drawMarker(i, noMap) {
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(P.X(p.d) + 0.5, P.pad.t); ctx.lineTo(P.X(p.d) + 0.5, P.pad.t + P.H); ctx.stroke();
   ctx.beginPath(); ctx.arc(P.X(p.d), P.Y(p.e), 4.5, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
+  updateLive(i);
+  if (PLAY.on) {            // durante la reproducción los datos ya están en el panel en vivo
+    tip.hidden = true;
+    if (!noMap && map.getSource('hover')) map.getSource('hover').setData({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [p.lon, p.lat] } });
+    return p;
+  }
   tip.hidden = false;
   let extra = '';
   if (S.hasTime) extra += ` · <b>${p.v.toFixed(1).replace('.', ',')}</b> km/h`;
   if (isFinite(p.hr)) extra += ` · <b>${fmtInt(p.hr)}</b> ppm`;
   if (isFinite(p.pw3)) extra += ` · <b>${fmtInt(p.pw3)}</b> W`;
   tip.innerHTML = `km <b>${(p.d / 1000).toFixed(2)}</b> · <b>${fmtInt(p.e)}</b> m · <b style="color:${g.color}">${fmtGrade(g.g)}</b>${extra}`;
-  updateLive(i);
   const tw = tip.offsetWidth, tx = P.X(p.d);
   tip.style.left = Math.min(Math.max(tx - tw / 2, 4), w - tw - 4) + 'px';
   if (!noMap && map.getSource('hover')) map.getSource('hover').setData({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [p.lon, p.lat] } });
@@ -1068,7 +1089,7 @@ function updateLive(i) {
   if (isFinite(p.cad)) items.push(['rpm', fmtInt(p.cad)]);
   if (isFinite(p.temp)) items.push(['°C', fmtInt(p.temp)]);
   box.innerHTML = items.map(([k, v, c]) => `<div><b${c ? ` style="color:${c}"` : ''}>${v}</b><small>${k}</small></div>`).join('');
-  box.hidden = !(PLAY.on || $('player').dataset.shown === '1');
+  box.hidden = !PLAY.on;
 }
 
 function playFrame(now) {
@@ -1113,6 +1134,7 @@ function startPlay() {
 }
 function pausePlay(ended) {
   PLAY.on = false;
+  $('live').hidden = true;
   PLAY.dot.remove();
   if (S.sel != null) drawMarker(S.sel);
   document.body.classList.remove('playing');
@@ -1148,19 +1170,56 @@ function setSpeedFromSlider() {
 $('playSpeed').addEventListener('input', setSpeedFromSlider);
 $('speedVal').addEventListener('click', () => { $('playSpeed').value = 0; setSpeedFromSlider(); });
 
-/* ---------- Paneles que se pueden mover ---------- */
-// Guarda la posición como fracción de la pantalla; doble toque en el asa la devuelve a su sitio
-function makeDraggable(el, handle, key) {
-  const apply = pos => {
-    if (!pos) { el.style.left = el.style.top = el.style.right = el.style.bottom = el.style.transform = ''; return; }
-    const W = innerWidth, H = innerHeight, r = el.getBoundingClientRect();
-    const x = Math.min(Math.max(pos.x * W, 4), Math.max(4, W - r.width - 4));
-    const y = Math.min(Math.max(pos.y * H, 4), Math.max(4, H - r.height - 4));
-    Object.assign(el.style, { left: x + 'px', top: y + 'px', right: 'auto', bottom: 'auto', transform: 'none' });
-  };
+// Modo «Mover controles»: cualquier bloque flotante se arrastra; la posición se guarda en prefs.layout
+prefs.layout = prefs.layout || {};
+const MOVABLE = [];
+function placeMovable(m) {
+  const pos = prefs.layout[m.key], el = m.el;
+  if (!pos) { for (const k of ['left', 'top', 'right', 'bottom', 'transform', 'width']) el.style[k] = ''; return; }
+  if (el.hidden || getComputedStyle(el).display === 'none') return;
+  if (pos.w) el.style.width = Math.min(pos.w, innerWidth - 8) + 'px';
+  const r = el.getBoundingClientRect(), W = innerWidth, H = innerHeight;
+  const x = Math.min(Math.max(pos.x * W, 4), Math.max(4, W - r.width - 4));
+  const y = Math.min(Math.max(pos.y * H, 4), Math.max(4, H - r.height - 4));
+  Object.assign(el.style, { left: x + 'px', top: y + 'px', right: 'auto', bottom: 'auto', transform: 'none' });
+}
+function makeMovable(el, key, keepWidth) {
+  if (!el) return;
+  const m = { el, key, keepWidth };
+  MOVABLE.push(m);
+  el.classList.add('movable');
   let drag = null;
+  el.addEventListener('pointerdown', e => {
+    if (!document.body.classList.contains('layout')) return;
+    e.preventDefault(); e.stopPropagation();
+    const r = el.getBoundingClientRect();
+    if (keepWidth) el.style.width = r.width + 'px';
+    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, w: r.width };
+    try { el.setPointerCapture(e.pointerId); } catch (err) {}
+  }, true);
+  el.addEventListener('pointermove', e => {
+    if (!drag) return;
+    e.stopPropagation();
+    prefs.layout[key] = { x: (e.clientX - drag.dx) / innerWidth, y: (e.clientY - drag.dy) / innerHeight, w: keepWidth ? drag.w : undefined };
+    placeMovable(m);
+  }, true);
+  const end = e => { if (!drag) return; drag = null; savePrefs(); };
+  el.addEventListener('pointerup', end, true);
+  el.addEventListener('pointercancel', end, true);
+  // los clics no hacen nada mientras se colocan los controles
+  el.addEventListener('click', e => { if (document.body.classList.contains('layout')) { e.preventDefault(); e.stopPropagation(); } }, true);
+  new MutationObserver(() => placeMovable(m)).observe(el, { attributes: true, attributeFilter: ['hidden'] });
+  placeMovable(m);
+}
+// El reproductor y el panel de datos ya guardaban su sitio: se pasa al mismo registro
+for (const [old, key] of [['playerPos', 'player'], ['livePos', 'live']]) if (prefs[old] && !prefs.layout[key]) { prefs.layout[key] = prefs[old]; delete prefs[old]; }
+// Arrastre rápido fuera del modo «Mover controles»: el reproductor desde su asa ⠿ y el panel de datos
+// desde cualquier punto. Doble toque devuelve el bloque a su sitio.
+function makeDraggable(el, handle, key) {
+  let drag = null;
+  const m = { el, key };
   handle.addEventListener('pointerdown', e => {
-    if (e.target.closest('button, input, select') && handle !== el.querySelector('.grip')) return;
+    if (document.body.classList.contains('layout')) return;
     const r = el.getBoundingClientRect();
     drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, moved: false };
     try { handle.setPointerCapture(e.pointerId); } catch (err) {}
@@ -1169,23 +1228,39 @@ function makeDraggable(el, handle, key) {
   handle.addEventListener('pointermove', e => {
     if (!drag) return;
     drag.moved = true;
-    apply({ x: (e.clientX - drag.dx) / innerWidth, y: (e.clientY - drag.dy) / innerHeight });
+    prefs.layout[key] = { x: (e.clientX - drag.dx) / innerWidth, y: (e.clientY - drag.dy) / innerHeight };
+    placeMovable(m);
   });
-  const end = () => {
-    if (!drag) return;
-    if (drag.moved) { const r = el.getBoundingClientRect(); prefs[key] = { x: r.left / innerWidth, y: r.top / innerHeight }; savePrefs(); }
-    drag = null;
-  };
+  const end = () => { if (drag && drag.moved) savePrefs(); drag = null; };
   handle.addEventListener('pointerup', end);
   handle.addEventListener('pointercancel', end);
-  handle.addEventListener('dblclick', () => { delete prefs[key]; savePrefs(); apply(null); });
-  addEventListener('resize', () => apply(prefs[key]));
-  const obs = new MutationObserver(() => { if (!el.hidden) apply(prefs[key]); });
-  obs.observe(el, { attributes: true, attributeFilter: ['hidden'] });
-  apply(prefs[key]);
+  handle.addEventListener('dblclick', () => { delete prefs.layout[key]; savePrefs(); placeMovable(m); });
 }
-makeDraggable($('player'), $('playerGrip'), 'playerPos');
-makeDraggable($('live'), $('live'), 'livePos');
+makeDraggable($('player'), $('playerGrip'), 'player');
+makeDraggable($('live'), $('live'), 'live');
+mapReady.then(() => {
+  makeMovable($('panel'), 'panel', true);
+  makeMovable(document.querySelector('.maplibregl-ctrl-top-right'), 'mapButtons');
+  makeMovable($('player'), 'player');
+  makeMovable($('live'), 'live');
+});
+addEventListener('resize', () => MOVABLE.forEach(placeMovable));
+function setLayoutMode(on) {
+  if (on && $('body').hidden) $('collapse').click();   // antes de bloquear los clics
+  document.body.classList.toggle('layout', on);
+  $('layoutBar').hidden = !on;
+  if (on) {
+    if (PLAY.on) pausePlay();
+    // se muestran el reproductor y el panel de datos para poder colocarlos
+    if (S.pts) { $('player').hidden = false; updateLive(S.sel ?? 0); $('live').hidden = false; }
+  } else {
+    showPlayer();
+    $('live').hidden = true;
+  }
+}
+$('layoutBtn').addEventListener('click', () => setLayoutMode(true));
+$('layoutDone').addEventListener('click', () => setLayoutMode(false));
+$('layoutReset').addEventListener('click', () => { prefs.layout = {}; savePrefs(); MOVABLE.forEach(placeMovable); });
 $('playProgress').addEventListener('input', e => {
   if (!S.pts) return;
   PLAY.x = e.target.value / 1000 * playAxis();
