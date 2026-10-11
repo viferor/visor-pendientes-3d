@@ -210,7 +210,17 @@ body.drawing #map canvas{cursor:crosshair}
       </div>
       <div class="sub">
         <label class="check"><input type="checkbox" id="showLabels" checked> Mostrar % sobre la línea</label>
-        <label class="check"><input type="checkbox" id="showArrows" checked> Flechas de dirección</label>
+        <label class="check"><input type="checkbox" id="showArrows" checked> Flechas de dirección y kilómetros</label>
+        <div class="ctl" id="arrowStepRow">
+          <label for="arrowStep">Cada</label>
+          <select id="arrowStep">
+            <option value="auto">Automático</option>
+            <option value="1">1 km</option>
+            <option value="2">2 km</option>
+            <option value="5">5 km</option>
+            <option value="10">10 km</option>
+          </select>
+        </div>
         <label class="check"><input type="checkbox" id="showProfile" checked> Mostrar perfil de altitud</label>
         <label class="check" id="followRow"><input type="checkbox" id="followProfile" checked> Llevar la vista al punto marcado en el perfil</label>
         <div class="ctl" id="profileAlphaRow">
@@ -254,7 +264,7 @@ if (NATIVE) {
 
 /* ---------- Preferencias guardadas ---------- */
 const PREFS_KEY = 'pendientes3d.prefs';
-const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true },
+const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true, arrowStep: 'auto' },
   (() => { try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch (e) { return {}; } })());
 function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {} }
 
@@ -368,6 +378,15 @@ const mapReady = new Promise(res => map.on('load', () => {
       'icon-rotate': ['get', 'b'],
       'icon-rotation-alignment': 'map',
       'icon-pitch-alignment': 'map',
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
+      visibility: prefs.arrows ? 'visible' : 'none'
+    } });
+  map.addLayer({ id: 'arrow-km', type: 'symbol', source: 'arrows',
+    layout: {
+      'icon-image': ['get', 'img'],
+      'icon-anchor': 'left',
+      'icon-offset': [14, 0],
       'icon-allow-overlap': true,
       'icon-ignore-placement': true,
       visibility: prefs.arrows ? 'visible' : 'none'
@@ -629,12 +648,33 @@ function bearingBetween(a, b) {
   const x = Math.cos(a.lat * toR) * Math.sin(b.lat * toR) - Math.sin(a.lat * toR) * Math.cos(b.lat * toR) * Math.cos((b.lon - a.lon) * toR);
   return Math.atan2(y, x) / toR;
 }
+// Etiqueta «12 km» dibujada en canvas (el estilo del mapa no carga fuentes)
+function kmImage(km) {
+  const id = 'km-' + km;
+  if (map.hasImage(id)) return id;
+  const r = 2, txt = km + ' km', c = document.createElement('canvas'), x = c.getContext('2d');
+  x.font = `700 ${13 * r}px Barlow Condensed, Arial Narrow, sans-serif`;
+  const w = Math.ceil(x.measureText(txt).width) + 12 * r, h = 20 * r;
+  c.width = w; c.height = h;
+  x.font = `700 ${13 * r}px Barlow Condensed, Arial Narrow, sans-serif`;
+  x.fillStyle = 'rgba(13,18,16,.85)';
+  x.beginPath(); x.roundRect ? x.roundRect(0, 0, w, h, 5 * r) : x.rect(0, 0, w, h); x.fill();
+  x.fillStyle = '#fff'; x.textBaseline = 'middle'; x.fillText(txt, 6 * r, h / 2 + r);
+  map.addImage(id, x.getImageData(0, 0, w, h), { pixelRatio: r });
+  return id;
+}
+function arrowStep(total) {
+  if (prefs.arrowStep !== 'auto') return +prefs.arrowStep * 1000;
+  return total < 15000 ? 1000 : total < 40000 ? 2000 : total < 120000 ? 5000 : 10000;
+}
 function arrowFeatures(pts) {
-  const total = pts[pts.length - 1].d, step = total < 15000 ? 1000 : 5000, out = [];
+  const total = pts[pts.length - 1].d, step = arrowStep(total), out = [];
   for (let d = step; d < total - step * 0.3; d += step) {
     const i = idxAt(d), a = pts[idxAt(Math.max(0, d - 30))], b = pts[idxAt(Math.min(total, d + 30))];
     if (a === b) continue;
-    out.push({ type: 'Feature', properties: { b: bearingBetween(a, b) }, geometry: { type: 'Point', coordinates: [pts[i].lon, pts[i].lat] } });
+    const km = Math.round(d / 100) / 10;
+    out.push({ type: 'Feature', properties: { b: bearingBetween(a, b), img: kmImage(String(km).replace('.', ',')) },
+      geometry: { type: 'Point', coordinates: [pts[i].lon, pts[i].lat] } });
   }
   return { type: 'FeatureCollection', features: out };
 }
@@ -1080,9 +1120,16 @@ document.querySelectorAll('[data-basemap]').forEach(b => b.addEventListener('cli
   prefs.basemap = b.dataset.basemap; savePrefs(); applyBasemap();
 }));
 $('showArrows').checked = prefs.arrows;
+$('arrowStep').value = prefs.arrowStep;
+$('arrowStepRow').hidden = !prefs.arrows;
 $('showArrows').addEventListener('change', e => {
   prefs.arrows = e.target.checked; savePrefs();
-  if (map.getLayer('arrows')) map.setLayoutProperty('arrows', 'visibility', prefs.arrows ? 'visible' : 'none');
+  $('arrowStepRow').hidden = !prefs.arrows;
+  for (const id of ['arrows', 'arrow-km']) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', prefs.arrows ? 'visible' : 'none');
+});
+$('arrowStep').addEventListener('change', e => {
+  prefs.arrowStep = e.target.value; savePrefs();
+  if (S.pts && map.getSource('arrows')) map.getSource('arrows').setData(arrowFeatures(S.pts));
 });
 $('followProfile').checked = prefs.follow;
 $('followProfile').addEventListener('change', e => { prefs.follow = e.target.checked; savePrefs(); });
