@@ -1,0 +1,951 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Visor de Pendientes 3D</title>
+<meta name="theme-color" content="#0d1210">
+<meta name="description" content="Visualiza tracks GPX en 3D sobre satélite coloreados por pendiente y dibuja rutas para tu ciclocomputador.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Pendientes 3D">
+<link rel="stylesheet" href="lib/maplibre-gl.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&display=swap">
+<style>
+/* Mapa satélite a pantalla completa; panel flotante arriba a la izquierda; perfil de altitud opcional abajo. */
+:root{
+  --panel: rgba(13,18,16,.86);
+  --panel-solid:#0d1210;
+  --text:#eef3ee;
+  --muted:#9aa89f;
+  --line:rgba(238,243,238,.14);
+  --paint:#f5e04a;
+  --danger:#ff8a7a;
+  --display:'Barlow Condensed', 'Arial Narrow', 'Roboto Condensed', sans-serif;
+  --body:'Barlow', 'Segoe UI', system-ui, sans-serif;
+  --profile-h:170px;
+  --profile-alpha:.86;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{height:100%;margin:0}
+body{background:var(--panel-solid);color:var(--text);font:14px/1.45 var(--body);overflow:hidden}
+body.no-profile{--profile-h:0px}
+#map{position:absolute;inset:0}
+
+/* Panel */
+#panel{position:absolute;top:calc(12px + env(safe-area-inset-top,0px));left:calc(12px + env(safe-area-inset-left,0px));width:316px;
+  max-height:calc(100% - var(--profile-h) - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px) - 36px);
+  display:flex;flex-direction:column;background:var(--panel);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border:1px solid var(--line);border-radius:10px;z-index:3;overflow:hidden}
+#panel header{display:flex;align-items:center;gap:10px;padding:12px 14px 10px;border-bottom:1px solid var(--line)}
+#panel h1{font:700 22px/1 var(--display);letter-spacing:.02em;margin:0;text-transform:uppercase;flex:1}
+#panel h1 span{color:var(--paint)}
+#collapse{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;width:30px;height:30px;cursor:pointer;font:600 16px/1 var(--body)}
+#body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:14px;overflow:auto}
+#trackName{font:600 15px/1.25 var(--body);margin:0;text-wrap:balance}
+#status{font-size:12.5px;color:var(--muted);margin:2px 0 0;min-height:1em}
+#status.err{color:var(--danger)}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:7px;padding:9px 10px;cursor:pointer;
+  font:600 13.5px/1 var(--body);border:1px solid var(--line);background:rgba(255,255,255,.06);color:var(--text);white-space:nowrap}
+.btn.primary{background:var(--paint);color:#1b1a0c;border-color:transparent}
+.btn:hover{filter:brightness(1.12)}
+.btn:disabled{opacity:.45;cursor:default;filter:none}
+.btn:focus-visible,select:focus-visible,input:focus-visible,#collapse:focus-visible,.seg button:focus-visible,summary:focus-visible{outline:2px solid var(--paint);outline-offset:2px}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.row .btn{flex:1}
+
+.box{display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid rgba(245,224,74,.35);border-radius:8px;background:rgba(245,224,74,.05)}
+.box h2{margin:0;font:700 17px/1 var(--display);text-transform:uppercase;letter-spacing:.03em;color:var(--paint)}
+
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px 8px}
+.stat b{display:block;font:700 22px/1 var(--display);font-variant-numeric:tabular-nums}
+.stat small{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-top:3px}
+
+details.settings summary{cursor:pointer;font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);list-style:none;display:flex;justify-content:space-between}
+details.settings summary::-webkit-details-marker{display:none}
+details.settings summary::after{content:'+';font-size:15px}
+details.settings[open] summary::after{content:'–'}
+details.settings[open] summary{margin-bottom:10px}
+.ctl{display:grid;grid-template-columns:64px minmax(0,1fr);align-items:center;gap:9px 10px}
+.ctl > label,.ctl > span{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+select,input[type=range],input[type=text]{width:100%;min-width:0}
+select,input[type=text]{background:rgba(255,255,255,.06);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:500 13.5px var(--body)}
+input[type=range]{accent-color:var(--paint)}
+.seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.seg button{flex:1;min-width:0;background:none;border:0;color:var(--muted);padding:6px 3px;font:600 12.5px var(--body);cursor:pointer;white-space:nowrap}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button[aria-pressed=true]{background:rgba(245,224,74,.18);color:var(--paint)}
+.seg button:disabled{opacity:.4;cursor:default}
+.check{display:flex;align-items:center;gap:8px;font-size:13.5px;cursor:pointer}
+.check input{accent-color:var(--paint);width:16px;height:16px;margin:0}
+.sub{display:flex;flex-direction:column;gap:9px;margin-top:12px}
+
+.legend h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:0 0 6px;font-weight:500}
+.legend ul{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:1fr 1fr;gap:4px 10px}
+.legend li{display:flex;align-items:center;gap:7px;font-size:12.5px;font-variant-numeric:tabular-nums}
+.legend i{width:22px;height:8px;border-radius:2px;flex:none}
+.hint{font-size:12px;color:var(--muted);margin:0}
+
+/* Perfil */
+#profile{position:absolute;left:0;right:0;bottom:0;height:calc(var(--profile-h) + env(safe-area-inset-bottom,0px));
+  padding-bottom:env(safe-area-inset-bottom,0px);background:rgba(13,18,16,var(--profile-alpha));
+  border-top:1px solid rgba(238,243,238,calc(var(--profile-alpha) * .16));z-index:2}
+#profile .wrap{position:relative;height:100%}
+#profile canvas{position:absolute;inset:0;width:100%;height:100%}
+#overlay{cursor:crosshair;touch-action:none}
+#tip{position:absolute;top:8px;pointer-events:none;background:var(--panel-solid);border:1px solid var(--line);border-radius:6px;
+  padding:5px 8px;font:500 12.5px/1.3 var(--body);white-space:nowrap;font-variant-numeric:tabular-nums}
+#tip b{font-family:var(--display);font-size:15px}
+
+/* Etiquetas de pendiente */
+.g{font:700 13px/1 var(--display);padding:3px 6px 2px;border-radius:4px;background:var(--c);
+  border:1px solid rgba(0,0,0,.45);box-shadow:0 1px 4px rgba(0,0,0,.45);white-space:nowrap;pointer-events:none;
+  font-variant-numeric:tabular-nums;letter-spacing:.02em}
+
+/* Puntos de la ruta dibujada */
+.wp{width:16px;height:16px;border-radius:50%;background:#fff;border:3px solid #111;box-shadow:0 1px 5px rgba(0,0,0,.6);cursor:grab}
+.wp.start{background:#8fe36b;width:20px;height:20px}
+.wp.end{background:#ec4b36;width:20px;height:20px}
+body.drawing #map canvas{cursor:crosshair}
+
+#drop{position:absolute;inset:0;z-index:10;display:grid;place-items:center;background:rgba(13,18,16,.7);
+  border:3px dashed var(--paint);font:700 32px var(--display);text-transform:uppercase;color:var(--paint)}
+
+.maplibregl-ctrl-attrib{font-size:10px}
+.maplibregl-ctrl-bottom-right,.maplibregl-ctrl-bottom-left{bottom:calc(var(--profile-h) + env(safe-area-inset-bottom,0px))}
+.maplibregl-ctrl-top-right{top:env(safe-area-inset-top,0px);right:env(safe-area-inset-right,0px)}
+
+@media (max-width:640px){
+  :root{--profile-h:130px}
+  #panel{width:auto;right:60px}
+  .stat b{font-size:19px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<aside id="panel" aria-label="Controles">
+  <header>
+    <h1>Pendientes <span>3D</span></h1>
+    <button id="collapse" aria-expanded="true" aria-controls="body" title="Plegar panel">–</button>
+  </header>
+  <div id="body">
+    <div>
+      <p id="trackName">Cargando ejemplo…</p>
+      <p id="status"></p>
+    </div>
+
+    <div id="viewTools" class="row">
+      <label class="btn primary" for="file">Abrir GPX</label>
+      <input id="file" type="file" accept=".gpx,application/gpx+xml,application/xml,text/xml" hidden>
+      <button class="btn" id="startDraw" type="button">Dibujar ruta</button>
+      <button class="btn" id="fit" type="button" title="Encuadrar el recorrido">Encuadrar</button>
+    </div>
+
+    <div id="drawTools" class="box" hidden>
+      <h2>Dibujar ruta</h2>
+      <p class="hint">Toca el mapa para añadir puntos. Arrastra un punto para moverlo.</p>
+      <div class="ctl">
+        <span>Seguir</span>
+        <div class="seg" role="group" aria-label="Cómo une los puntos">
+          <button type="button" data-route="bike">Carretera</button>
+          <button type="button" data-route="foot">Caminos</button>
+          <button type="button" data-route="line">Recta</button>
+        </div>
+        <label for="routeName">Nombre</label>
+        <input type="text" id="routeName" value="Mi ruta" maxlength="60" autocomplete="off">
+      </div>
+      <div class="row">
+        <button class="btn" id="undo" type="button">Deshacer</button>
+        <button class="btn" id="loop" type="button">Cerrar circuito</button>
+        <button class="btn" id="clearDraw" type="button">Borrar</button>
+      </div>
+      <div class="row">
+        <button class="btn primary" id="exportGpx" type="button" disabled>Descargar GPX</button>
+        <button class="btn" id="shareGpx" type="button" hidden disabled>Compartir</button>
+        <button class="btn" id="endDraw" type="button">Terminar</button>
+      </div>
+    </div>
+
+    <div class="stats" id="stats"></div>
+
+    <details class="settings" id="settings" open>
+      <summary>Ajustes</summary>
+      <div class="ctl">
+        <label for="seglen">Tramo</label>
+        <select id="seglen">
+          <option value="auto">Automático</option>
+          <option value="50">50 m</option>
+          <option value="100">100 m</option>
+          <option value="200">200 m</option>
+          <option value="500">500 m</option>
+          <option value="1000">1 km</option>
+        </select>
+        <span>Altitud</span>
+        <div class="seg" role="group" aria-label="Fuente de altitud">
+          <button type="button" data-mode="gpx" id="modeGpx">Del GPX</button>
+          <button type="button" data-mode="terrain" id="modeTer">Del terreno</button>
+        </div>
+        <label for="exag">Relieve</label>
+        <input id="exag" type="range" min="1" max="3" step="0.1" value="1.5">
+      </div>
+      <div class="sub">
+        <label class="check"><input type="checkbox" id="showLabels" checked> Mostrar % sobre la línea</label>
+        <label class="check"><input type="checkbox" id="showProfile" checked> Mostrar perfil de altitud</label>
+        <div class="ctl" id="profileAlphaRow">
+          <label for="profileAlpha">Opacidad</label>
+          <input id="profileAlpha" type="range" min="0" max="100" step="5" value="86">
+        </div>
+      </div>
+    </details>
+
+    <div class="legend">
+      <h2>Pendiente</h2>
+      <ul id="legend"></ul>
+    </div>
+    <button class="btn" id="install" type="button" hidden>Instalar la app</button>
+    <p class="hint">Arrastra un .gpx sobre el mapa para abrirlo. Clic derecho y arrastrar (o dos dedos) para girar e inclinar la vista.</p>
+  </div>
+</aside>
+
+<section id="profile" aria-label="Perfil de altitud">
+  <div class="wrap">
+    <canvas id="base"></canvas>
+    <canvas id="overlay"></canvas>
+    <div id="tip" hidden></div>
+  </div>
+</section>
+
+<div id="drop" hidden>Suelta el GPX aquí</div>
+
+<script src="lib/maplibre-gl.js"></script>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+
+/* ---------- Preferencias guardadas ---------- */
+const PREFS_KEY = 'pendientes3d.prefs';
+const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto' },
+  (() => { try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch (e) { return {}; } })());
+function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {} }
+
+/* ---------- Escala de color por pendiente ---------- */
+const BINS = [
+  {max:-6,   c:'#3a6ee8', label:'< −6 %'},
+  {max:-2,   c:'#6cc4f2', label:'−6 a −2 %'},
+  {max: 2,   c:'#8fe36b', label:'−2 a 2 %'},
+  {max: 5,   c:'#f5e04a', label:'2 a 5 %'},
+  {max: 8,   c:'#f7a531', label:'5 a 8 %'},
+  {max: 11,  c:'#ec4b36', label:'8 a 11 %'},
+  {max: 15,  c:'#b0173a', label:'11 a 15 %'},
+  {max: Infinity, c:'#7a1f86', label:'> 15 %'},
+];
+const gradeColor = g => (BINS.find(b => g < b.max) || BINS[BINS.length-1]).c;
+function textOn(hex){
+  const n = parseInt(hex.slice(1),16), r=n>>16, g=(n>>8)&255, b=n&255;
+  return (0.299*r + 0.587*g + 0.114*b) > 150 ? '#141410' : '#ffffff';
+}
+const fmtGrade = g => (g > 0.05 ? '+' : g < -0.05 ? '−' : '') + Math.abs(g).toFixed(1) + '%';
+const fmtInt = n => Math.round(n).toLocaleString('es-ES');
+$('legend').innerHTML = BINS.map(b => `<li><i style="background:${b.c}"></i>${b.label}</li>`).join('');
+
+/* ---------- Mapa ---------- */
+const map = new maplibregl.Map({
+  container: 'map',
+  style: {
+    version: 8,
+    sources: {
+      sat: {
+        type: 'raster',
+        tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+        tileSize: 256, maxzoom: 19,
+        attribution: 'Imágenes © Esri, Maxar, Earthstar Geographics'
+      },
+      dem: {
+        type: 'raster-dem',
+        tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+        tileSize: 256, maxzoom: 15, encoding: 'terrarium',
+        attribution: 'Relieve: Terrain Tiles (Mapzen / AWS) · Rutas: OSRM / FOSSGIS · © OpenStreetMap'
+      }
+    },
+    layers: [{ id: 'sat', type: 'raster', source: 'sat' }],
+    terrain: { source: 'dem', exaggeration: prefs.exag }
+  },
+  center: [-3.38, 37.075], zoom: 12.5, pitch: 62, bearing: -30, maxPitch: 85
+});
+map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
+map.addControl(new maplibregl.FullscreenControl({ container: document.body }), 'top-right');
+map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
+
+const empty = { type: 'FeatureCollection', features: [] };
+const mapReady = new Promise(res => map.on('load', () => {
+  try { map.setSky({ 'sky-color': '#7fb2e6', 'horizon-color': '#dbe8f2', 'fog-color': '#dbe8f2', 'sky-horizon-blend': 0.5, 'horizon-fog-blend': 0.6, 'fog-ground-blend': 0.85 }); } catch (e) {}
+  map.addSource('route', { type: 'geojson', data: empty });
+  map.addSource('hover', { type: 'geojson', data: empty });
+  const w = ['interpolate', ['linear'], ['zoom'], 9, 3, 13, 6, 16, 10];
+  map.addLayer({ id: 'route-casing', type: 'line', source: 'route',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': '#000', 'line-opacity': 0.55, 'line-width': ['interpolate', ['linear'], ['zoom'], 9, 6, 13, 9, 16, 13] } });
+  map.addLayer({ id: 'route-line', type: 'line', source: 'route',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': ['get', 'color'], 'line-width': w } });
+  map.addLayer({ id: 'hover-pt', type: 'circle', source: 'hover',
+    paint: { 'circle-radius': 7, 'circle-color': '#fff', 'circle-stroke-width': 3, 'circle-stroke-color': '#111' } });
+  res();
+}));
+
+/* ---------- Estado ---------- */
+const S = { raw: null, name: '', mode: 'gpx', hasEle: false, terrainEle: null, pts: null, segs: null, L: 100, labels: new Map() };
+function setStatus(msg, err) { $('status').textContent = msg || ''; $('status').classList.toggle('err', !!err); }
+
+/* ---------- GPX: lectura ---------- */
+function parseGPX(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.getElementsByTagName('parsererror').length) throw new Error('El archivo no es un GPX válido.');
+  let nodes = [...doc.getElementsByTagName('trkpt')];
+  if (!nodes.length) nodes = [...doc.getElementsByTagName('rtept')];
+  if (!nodes.length) throw new Error('El GPX no contiene puntos de track ni de ruta.');
+  let name = '';
+  for (const tag of ['trk', 'rte', 'metadata']) {
+    const el = doc.getElementsByTagName(tag)[0];
+    const n = el && [...el.children].find(c => c.localName === 'name');
+    if (n && n.textContent.trim()) { name = n.textContent.trim(); break; }
+  }
+  const pts = [];
+  for (const p of nodes) {
+    const lat = parseFloat(p.getAttribute('lat')), lon = parseFloat(p.getAttribute('lon'));
+    if (!isFinite(lat) || !isFinite(lon)) continue;
+    const e = [...p.children].find(c => c.localName === 'ele');
+    const ele = e ? parseFloat(e.textContent) : NaN;
+    const prev = pts[pts.length - 1];
+    if (prev && haversine(prev, { lat, lon }) < 0.5) continue;
+    pts.push({ lat, lon, ele });
+  }
+  if (pts.length < 2) throw new Error('El GPX tiene menos de dos puntos útiles.');
+  return { name, pts };
+}
+
+/* ---------- GPX: escritura ---------- */
+function buildGPX(name, pts) {
+  const esc = s => String(s).replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
+  const body = pts.map(p => `      <trkpt lat="${p.lat.toFixed(6)}" lon="${p.lon.toFixed(6)}"><ele>${p.e.toFixed(1)}</ele></trkpt>`).join('\n');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Visor de Pendientes 3D" xmlns="http://www.topografix.com/GPX/1/1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+  <metadata><name>${esc(name)}</name><time>${new Date().toISOString()}</time></metadata>
+  <trk>
+    <name>${esc(name)}</name>
+    <type>cycling</type>
+    <trkseg>
+${body}
+    </trkseg>
+  </trk>
+</gpx>
+`;
+}
+function gpxFile() {
+  const name = ($('routeName').value || 'Mi ruta').trim();
+  const slug = name.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w-]+/g, '_').replace(/^_+|_+$/g, '') || 'ruta';
+  return new File([buildGPX(name, S.pts)], slug + '.gpx', { type: 'application/gpx+xml' });
+}
+
+function haversine(a, b) {
+  const R = 6371008.8, toR = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * toR, dLon = (b.lon - a.lon) * toR;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * toR) * Math.cos(b.lat * toR) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+/* ---------- Altitud del terreno (teselas Terrarium) ---------- */
+const tileCache = new Map();
+function loadTile(z, x, y) {
+  const key = `${z}/${x}/${y}`;
+  if (!tileCache.has(key)) {
+    tileCache.set(key, new Promise((res, rej) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const c = document.createElement('canvas'); c.width = c.height = 256;
+        const ctx = c.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0);
+        res(ctx.getImageData(0, 0, 256, 256).data);
+      };
+      img.onerror = () => { tileCache.delete(key); rej(new Error('No se pudo descargar el modelo de elevación. Revisa la conexión.')); };
+      img.src = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${key}.png`;
+    }));
+  }
+  return tileCache.get(key);
+}
+async function terrainElevations(pts, totalLen) {
+  const z = totalLen > 80000 ? 13 : 14, n = 2 ** z;
+  const loc = pts.map(p => {
+    const x = (p.lon + 180) / 360 * n * 256;
+    const s = Math.sin(p.lat * Math.PI / 180);
+    const y = (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n * 256;
+    return { tx: Math.floor(x / 256), ty: Math.floor(y / 256), px: Math.min(255, Math.floor(x % 256)), py: Math.min(255, Math.floor(y % 256)) };
+  });
+  const keys = [...new Set(loc.map(l => `${l.tx}/${l.ty}`))];
+  const tiles = {};
+  let done = 0;
+  await Promise.all(keys.map(async k => {
+    const [tx, ty] = k.split('/').map(Number);
+    tiles[k] = await loadTile(z, tx, ty);
+    if (keys.length > 4) setStatus(`Leyendo relieve… ${++done}/${keys.length}`);
+  }));
+  return loc.map(l => {
+    const d = tiles[`${l.tx}/${l.ty}`], i = (l.py * 256 + l.px) * 4;
+    return d[i] * 256 + d[i + 1] + d[i + 2] / 256 - 32768;
+  });
+}
+
+/* ---------- Análisis ---------- */
+function autoLength(total) { return total < 5000 ? 50 : total < 30000 ? 100 : total < 80000 ? 200 : 500; }
+
+function smooth(pts, W) {
+  const out = new Array(pts.length);
+  let lo = 0, hi = 0, sum = 0, cnt = 0;
+  for (let i = 0; i < pts.length; i++) {
+    while (hi < pts.length && pts[hi].d - pts[i].d <= W) { sum += pts[hi].e0; cnt++; hi++; }
+    while (pts[i].d - pts[lo].d > W) { sum -= pts[lo].e0; cnt--; lo++; }
+    out[i] = sum / cnt;
+  }
+  return out;
+}
+
+function buildSegments(pts, L) {
+  const segs = [];
+  let s = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const last = i === pts.length - 1;
+    if (pts[i].d - pts[s].d >= L || last) {
+      if (last && segs.length && pts[i].d - pts[s].d < L * 0.4) segs[segs.length - 1].i1 = i;
+      else segs.push({ i0: s, i1: i });
+      s = i;
+    }
+  }
+  for (const g of segs) {
+    const a = pts[g.i0], b = pts[g.i1];
+    g.d0 = a.d; g.d1 = b.d;
+    g.g = (b.e - a.e) / Math.max(1, b.d - a.d) * 100;
+    g.color = gradeColor(g.g);
+    const mid = (a.d + b.d) / 2;
+    let k = g.i0; while (k < g.i1 && pts[k + 1].d < mid) k++;
+    const p = pts[k], q = pts[Math.min(k + 1, g.i1)], t = q.d > p.d ? (mid - p.d) / (q.d - p.d) : 0;
+    g.mid = [p.lon + (q.lon - p.lon) * t, p.lat + (q.lat - p.lat) * t];
+  }
+  return segs;
+}
+
+async function analyze() {
+  const rawRef = S.raw, raw = rawRef.pts;
+  const pts = raw.map(p => ({ lat: p.lat, lon: p.lon, d: 0, e0: p.ele, e: 0 }));
+  for (let i = 1; i < pts.length; i++) pts[i].d = pts[i - 1].d + haversine(pts[i - 1], pts[i]);
+  const total = pts[pts.length - 1].d;
+
+  if (S.mode === 'terrain') {
+    if (!S.terrainEle) {
+      const ele = await terrainElevations(raw, total);
+      if (S.raw !== rawRef) return false;           // llegó otro recorrido mientras tanto
+      S.terrainEle = ele;
+    }
+    pts.forEach((p, i) => p.e0 = S.terrainEle[i]);
+  } else {
+    let lastI = -1;
+    for (let i = 0; i < pts.length; i++) {
+      if (isFinite(pts[i].e0)) {
+        if (lastI >= 0 && i - lastI > 1) for (let j = lastI + 1; j < i; j++) {
+          const t = (pts[j].d - pts[lastI].d) / (pts[i].d - pts[lastI].d);
+          pts[j].e0 = pts[lastI].e0 + (pts[i].e0 - pts[lastI].e0) * t;
+        }
+        lastI = i;
+      }
+    }
+    const first = pts.findIndex(p => isFinite(p.e0));
+    for (let i = 0; i < first; i++) pts[i].e0 = pts[first].e0;
+    for (let i = lastI + 1; i < pts.length; i++) pts[i].e0 = pts[lastI].e0;
+  }
+
+  const sm = smooth(pts, S.mode === 'terrain' ? 25 : 40);
+  pts.forEach((p, i) => p.e = sm[i]);
+
+  const auto = autoLength(total);
+  S.L = $('seglen').value === 'auto' ? auto : +$('seglen').value;
+  $('seglen').options[0].textContent = `Automático (${auto >= 1000 ? auto / 1000 + ' km' : auto + ' m'})`;
+
+  S.pts = pts;
+  S.segs = buildSegments(pts, S.L);
+  render();
+  setStatus(`Altitud ${S.mode === 'terrain' ? 'del modelo de terreno' : 'del GPX'} · tramos de ${S.L} m`);
+  return true;
+}
+
+/* ---------- Pintado ---------- */
+function clearTrack() {
+  S.pts = S.segs = null;
+  if (map.getSource('route')) map.getSource('route').setData(empty);
+  clearLabels();
+  $('stats').innerHTML = '';
+  hoverOut();
+  drawProfile();
+  updateExportButtons();
+}
+
+function render() {
+  const { pts, segs } = S;
+  map.getSource('route').setData({
+    type: 'FeatureCollection',
+    features: segs.map(g => ({
+      type: 'Feature', properties: { color: g.color },
+      geometry: { type: 'LineString', coordinates: pts.slice(g.i0, g.i1 + 1).map(p => [p.lon, p.lat]) }
+    }))
+  });
+
+  let up = 0, down = 0, max = -Infinity, min = Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    if (i) { const de = pts[i].e - pts[i - 1].e; de > 0 ? up += de : down -= de; }
+    max = Math.max(max, pts[i].e); min = Math.min(min, pts[i].e);
+  }
+  const full = segs.filter(g => g.d1 - g.d0 >= S.L * 0.6);
+  const gmax = Math.max(...(full.length ? full : segs).map(g => g.g));
+  const total = pts[pts.length - 1].d;
+  const stats = [
+    [(total / 1000).toLocaleString('es-ES', { maximumFractionDigits: 2 }) + ' km', 'Distancia'],
+    ['+' + fmtInt(up) + ' m', 'Desnivel +'],
+    ['−' + fmtInt(down) + ' m', 'Desnivel −'],
+    [fmtInt(max) + ' m', 'Alt. máx.'],
+    [fmtInt(min) + ' m', 'Alt. mín.'],
+    [fmtGrade(gmax), 'Pend. máx.'],
+  ];
+  $('stats').innerHTML = stats.map(([v, l]) => `<div class="stat"><b>${v}</b><small>${l}</small></div>`).join('');
+
+  clearLabels();
+  updateLabels();
+  drawProfile();
+  updateExportButtons();
+}
+
+/* Etiquetas de % : solo las que caben a esta escala y están en pantalla */
+function clearLabels() { for (const m of S.labels.values()) m.remove(); S.labels.clear(); }
+function updateLabels() {
+  if (!S.segs || !$('showLabels').checked) { clearLabels(); return; }
+  const lat = map.getCenter().lat;
+  const mpp = 156543.03 * Math.cos(lat * Math.PI / 180) / 2 ** map.getZoom();
+  const step = Math.max(1, Math.ceil(64 / (S.L / mpp)));
+  const b = map.getBounds();
+  const padLon = (b.getEast() - b.getWest()) * 0.15, padLat = (b.getNorth() - b.getSouth()) * 0.15;
+  const inView = ([lo, la]) => lo > b.getWest() - padLon && lo < b.getEast() + padLon && la > b.getSouth() - padLat && la < b.getNorth() + padLat;
+  const want = new Set();
+  for (let i = 0; i < S.segs.length && want.size < 260; i += step) if (inView(S.segs[i].mid)) want.add(i);
+  for (const [i, m] of S.labels) if (!want.has(i)) { m.remove(); S.labels.delete(i); }
+  for (const i of want) {
+    if (S.labels.has(i)) continue;
+    const g = S.segs[i];
+    const el = document.createElement('div');
+    el.className = 'g';
+    el.style.setProperty('--c', g.color);
+    el.style.color = textOn(g.color);
+    el.textContent = fmtGrade(g.g);
+    S.labels.set(i, new maplibregl.Marker({ element: el, anchor: 'bottom', offset: [0, -6] }).setLngLat(g.mid).addTo(map));
+  }
+}
+map.on('moveend', updateLabels);
+
+/* ---------- Perfil ---------- */
+const base = $('base'), over = $('overlay'), tip = $('tip');
+let P = null;
+function niceStep(range, target, opts) { return opts.find(s => range / s <= target) || opts[opts.length - 1]; }
+function sizeCanvas(c) {
+  const r = c.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  c.width = Math.round(r.width * dpr); c.height = Math.round(r.height * dpr);
+  const ctx = c.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w: r.width, h: r.height };
+}
+
+function drawProfile() {
+  if ($('profile').hidden) return;
+  const { ctx, w, h } = sizeCanvas(base);
+  sizeCanvas(over);
+  P = null;
+  if (!S.pts) return;
+  const a = prefs.alpha / 100;
+  const pts = S.pts, total = pts[pts.length - 1].d;
+  const pad = { l: 50, r: 16, t: 14, b: 24 };
+  const W = w - pad.l - pad.r, H = h - pad.t - pad.b;
+  let emin = Infinity, emax = -Infinity;
+  for (const p of pts) { emin = Math.min(emin, p.e); emax = Math.max(emax, p.e); }
+  const eStep = niceStep(Math.max(20, emax - emin), 4, [10, 20, 25, 50, 100, 200, 250, 500, 1000]);
+  const lo = Math.floor((emin - eStep * 0.2) / eStep) * eStep, hi = Math.ceil((emax + eStep * 0.1) / eStep) * eStep;
+  const X = d => pad.l + d / total * W, Y = e => pad.t + (1 - (e - lo) / (hi - lo)) * H;
+  P = { X, Y, pad, W, H, total };
+
+  // Con el fondo muy transparente, los textos llevan sombra para leerse sobre el satélite
+  const shadow = a < 0.6;
+  ctx.font = '600 11px Barlow, system-ui, sans-serif';
+  ctx.strokeStyle = `rgba(238,243,238,${0.10 + 0.08 * (1 - a)})`; ctx.lineWidth = 1;
+  const label = (t, x, y) => {
+    if (shadow) { ctx.shadowColor = 'rgba(0,0,0,.95)'; ctx.shadowBlur = 4; }
+    ctx.fillStyle = shadow ? '#eef3ee' : '#9aa89f'; ctx.fillText(t, x, y);
+    ctx.shadowBlur = 0;
+  };
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (let e = lo; e <= hi + 0.01; e += eStep) {
+    const y = Math.round(Y(e)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
+    label(fmtInt(e) + ' m', pad.l - 6, y);
+  }
+  const kStep = niceStep(total / 1000, 10, [0.5, 1, 2, 5, 10, 20, 25, 50, 100]);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (let k = 0; k <= total / 1000 + 1e-9; k += kStep) label(k.toLocaleString('es-ES') + ' km', X(k * 1000), h - pad.b + 6);
+
+  ctx.globalAlpha = 0.45 + 0.47 * a;
+  for (const g of S.segs) {
+    ctx.beginPath(); ctx.moveTo(X(g.d0), Y(lo));
+    for (let i = g.i0; i <= g.i1; i++) ctx.lineTo(X(pts[i].d), Y(pts[i].e));
+    ctx.lineTo(X(g.d1), Y(lo)); ctx.closePath();
+    ctx.fillStyle = g.color; ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.beginPath();
+  pts.forEach((p, i) => i ? ctx.lineTo(X(p.d), Y(p.e)) : ctx.moveTo(X(p.d), Y(p.e)));
+  if (shadow) { ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 3; }
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.6; ctx.stroke();
+  ctx.shadowBlur = 0;
+}
+
+function idxAt(d) {
+  let a = 0, b = S.pts.length - 1;
+  while (b - a > 1) { const m = (a + b) >> 1; S.pts[m].d < d ? a = m : b = m; }
+  return d - S.pts[a].d < S.pts[b].d - d ? a : b;
+}
+function segAt(i) { return S.segs.find(g => i >= g.i0 && i <= g.i1) || S.segs[S.segs.length - 1]; }
+
+function hoverAt(clientX) {
+  if (!S.pts || !P) return null;
+  const r = over.getBoundingClientRect();
+  const x = Math.min(Math.max(clientX - r.left, P.pad.l), P.pad.l + P.W);
+  const i = idxAt((x - P.pad.l) / P.W * P.total), p = S.pts[i], g = segAt(i);
+  const { ctx, w } = sizeCanvas(over);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(P.X(p.d) + 0.5, P.pad.t); ctx.lineTo(P.X(p.d) + 0.5, P.pad.t + P.H); ctx.stroke();
+  ctx.beginPath(); ctx.arc(P.X(p.d), P.Y(p.e), 4.5, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
+  tip.hidden = false;
+  tip.innerHTML = `km <b>${(p.d / 1000).toFixed(2)}</b> · <b>${fmtInt(p.e)}</b> m · <b style="color:${g.color}">${fmtGrade(g.g)}</b>`;
+  const tw = tip.offsetWidth, tx = P.X(p.d);
+  tip.style.left = Math.min(Math.max(tx - tw / 2, 4), w - tw - 4) + 'px';
+  map.getSource('hover').setData({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [p.lon, p.lat] } });
+  return p;
+}
+function hoverOut() {
+  tip.hidden = true;
+  if (!$('profile').hidden) sizeCanvas(over);
+  if (map.getSource('hover')) map.getSource('hover').setData(empty);
+}
+over.addEventListener('pointermove', e => hoverAt(e.clientX));
+over.addEventListener('pointerleave', hoverOut);
+over.addEventListener('click', e => { const p = hoverAt(e.clientX); if (p) map.easeTo({ center: [p.lon, p.lat], zoom: Math.max(map.getZoom(), 15), duration: 900 }); });
+
+/* ---------- Cámara ---------- */
+function fitRoute(animate = true) {
+  if (!S.pts) return;
+  const b = new maplibregl.LngLatBounds();
+  S.pts.forEach(p => b.extend([p.lon, p.lat]));
+  const panel = $('panel').getBoundingClientRect(), prof = $('profile').getBoundingClientRect();
+  const wide = window.innerWidth > 640;
+  map.fitBounds(b, {
+    padding: { top: wide ? 70 : panel.bottom + 20, bottom: prof.height + 50, left: wide ? panel.right + 40 : 30, right: 70 },
+    pitch: 60, bearing: map.getBearing(), duration: animate ? 1600 : 0, maxZoom: 16
+  });
+}
+
+/* ---------- Carga de un GPX ---------- */
+async function loadTrack(name, pts) {
+  await mapReady;
+  if (D.active) endDraw(false);
+  S.raw = { pts };
+  S.name = name;
+  S.terrainEle = null;
+  S.hasEle = pts.filter(p => isFinite(p.ele)).length >= pts.length * 0.8;
+  S.mode = S.hasEle ? 'gpx' : 'terrain';
+  syncMode();
+  $('trackName').textContent = name || 'Recorrido sin nombre';
+  $('routeName').value = name || 'Mi ruta';
+  hoverOut();
+  try {
+    if (await analyze()) fitRoute();
+  } catch (err) { setStatus(err.message, true); }
+}
+async function openFile(file) {
+  if (!file) return;
+  try {
+    const { name, pts } = parseGPX(await file.text());
+    await loadTrack(name || file.name.replace(/\.gpx$/i, ''), pts);
+  } catch (err) { setStatus(err.message, true); }
+}
+function syncMode() {
+  $('modeGpx').disabled = !S.hasEle;
+  $('modeGpx').title = S.hasEle ? '' : 'Este recorrido no trae altitudes';
+  $('modeGpx').setAttribute('aria-pressed', S.mode === 'gpx');
+  $('modeTer').setAttribute('aria-pressed', S.mode === 'terrain');
+}
+
+/* ---------- Dibujo de rutas ---------- */
+const D = { active: false, wps: [], legs: [], legReq: [], route: prefs.route, warn: '' };
+
+function densify(coords, step) {
+  const out = [];
+  for (let i = 0; i < coords.length - 1; i++) {
+    const a = { lon: coords[i][0], lat: coords[i][1] }, b = { lon: coords[i + 1][0], lat: coords[i + 1][1] };
+    const n = Math.max(1, Math.ceil(haversine(a, b) / step));
+    for (let j = 0; j < n; j++) out.push({ lon: a.lon + (b.lon - a.lon) * j / n, lat: a.lat + (b.lat - a.lat) * j / n, ele: NaN });
+  }
+  const l = coords[coords.length - 1];
+  out.push({ lon: l[0], lat: l[1], ele: NaN });
+  return out;
+}
+
+async function routeOSRM(a, b, mode) {
+  const svc = mode === 'foot' ? 'routed-foot' : 'routed-bike';
+  const url = `https://routing.openstreetmap.de/${svc}/route/v1/driving/${a.lng.toFixed(6)},${a.lat.toFixed(6)};${b.lng.toFixed(6)},${b.lat.toFixed(6)}?overview=full&geometries=geojson`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('routing ' + r.status);
+  const j = await r.json();
+  if (j.code !== 'Ok' || !j.routes || !j.routes.length) throw new Error('sin ruta');
+  const c = j.routes[0].geometry.coordinates;
+  // une la geometría con los puntos tocados para que no queden huecos
+  return [[a.lng, a.lat], ...c, [b.lng, b.lat]];
+}
+
+async function computeLeg(i) {
+  const a = D.wps[i].ll, b = D.wps[i + 1].ll, req = {};
+  D.legReq[i] = req; D.legs[i] = null;
+  let coords;
+  if (D.route === 'line') coords = [[a.lng, a.lat], [b.lng, b.lat]];
+  else {
+    try { coords = await routeOSRM(a, b, D.route); }
+    catch (e) { coords = [[a.lng, a.lat], [b.lng, b.lat]]; D.warn = 'No se encontró camino entre dos puntos; ese tramo va en línea recta.'; }
+  }
+  if (D.legReq[i] !== req) return;
+  D.legs[i] = coords;
+  refreshDraw();
+}
+
+function wpMarker(ll) {
+  const el = document.createElement('div');
+  el.className = 'wp';
+  const m = new maplibregl.Marker({ element: el, draggable: true }).setLngLat(ll).addTo(map);
+  const wp = { ll, m, el };
+  m.on('dragend', () => {
+    wp.ll = m.getLngLat();
+    const k = D.wps.indexOf(wp);
+    if (k > 0) computeLeg(k - 1);
+    if (k < D.wps.length - 1) computeLeg(k);
+  });
+  return wp;
+}
+function styleWps() {
+  D.wps.forEach((w, i) => {
+    w.el.classList.toggle('start', i === 0);
+    w.el.classList.toggle('end', i === D.wps.length - 1 && i > 0);
+    w.el.title = i === 0 ? 'Salida' : i === D.wps.length - 1 ? 'Llegada' : `Punto ${i + 1}`;
+  });
+}
+function addWaypoint(ll) {
+  D.wps.push(wpMarker(ll));
+  styleWps();
+  if (D.wps.length > 1) { D.legs.push(null); D.legReq.push(null); computeLeg(D.wps.length - 2); }
+  refreshDraw();
+}
+
+async function refreshDraw() {
+  if (!D.active) return;
+  $('undo').disabled = !D.wps.length;
+  $('clearDraw').disabled = !D.wps.length;
+  $('loop').disabled = D.wps.length < 2;
+  if (D.wps.length < 2) {
+    S.raw = null; clearTrack();
+    setStatus(D.wps.length ? 'Toca el mapa para añadir el siguiente punto.' : 'Toca el mapa para marcar la salida.');
+    return;
+  }
+  if (D.legs.some(l => !l)) { setStatus('Calculando ruta…'); return; }
+  const coords = [];
+  D.legs.forEach((l, i) => (i ? l.slice(1) : l).forEach(c => coords.push(c)));
+  S.raw = { pts: densify(coords, 20) };
+  S.terrainEle = null; S.mode = 'terrain'; S.hasEle = false; syncMode();
+  try {
+    if (await analyze() && D.warn) { setStatus(D.warn, true); D.warn = ''; }
+  } catch (e) { setStatus(e.message, true); }
+}
+
+function startDraw() {
+  D.active = true; D.wps = []; D.legs = []; D.legReq = []; D.warn = '';
+  document.body.classList.add('drawing');
+  $('viewTools').hidden = true; $('drawTools').hidden = false;
+  $('trackName').textContent = 'Nueva ruta';
+  $('routeName').value = 'Mi ruta';
+  syncRouteButtons();
+  S.raw = null; S.hasEle = false; S.mode = 'terrain'; syncMode(); clearTrack();
+  map.easeTo({ pitch: 0, bearing: 0, duration: 800 });
+  refreshDraw();
+}
+function endDraw(keep = true) {
+  D.active = false;
+  D.legReq = D.legReq.map(() => null);
+  D.wps.forEach(w => w.m.remove());
+  D.wps = []; D.legs = [];
+  document.body.classList.remove('drawing');
+  $('viewTools').hidden = false; $('drawTools').hidden = true;
+  if (keep && S.pts) {
+    S.name = $('routeName').value.trim() || 'Mi ruta';
+    $('trackName').textContent = S.name;
+    map.easeTo({ pitch: 60, duration: 1000 });
+  } else if (keep) {
+    $('trackName').textContent = 'Abre un GPX o dibuja una ruta';
+    setStatus('');
+  }
+}
+function syncRouteButtons() {
+  document.querySelectorAll('[data-route]').forEach(b => b.setAttribute('aria-pressed', b.dataset.route === D.route));
+}
+
+map.on('click', e => {
+  if (!D.active) return;
+  if (e.originalEvent && e.originalEvent.target.closest && e.originalEvent.target.closest('.wp')) return;
+  addWaypoint(e.lngLat);
+});
+
+function updateExportButtons() {
+  const ok = !!S.pts;
+  $('exportGpx').disabled = !ok;
+  $('shareGpx').disabled = !ok;
+}
+const canShareFiles = (() => {
+  try { return !!(navigator.canShare && navigator.canShare({ files: [new File(['x'], 'x.gpx', { type: 'application/gpx+xml' })] })); }
+  catch (e) { return false; }
+})();
+$('shareGpx').hidden = !canShareFiles;
+
+$('exportGpx').addEventListener('click', () => {
+  if (!S.pts) return;
+  const f = gpxFile(), url = URL.createObjectURL(f);
+  const a = document.createElement('a');
+  a.href = url; a.download = f.name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  setStatus(`Descargado ${f.name} (${S.pts.length.toLocaleString('es-ES')} puntos).`);
+});
+$('shareGpx').addEventListener('click', async () => {
+  if (!S.pts) return;
+  const f = gpxFile();
+  try { await navigator.share({ files: [f], title: f.name }); }
+  catch (e) { if (e.name !== 'AbortError') setStatus('No se pudo compartir el archivo. Usa «Descargar GPX».', true); }
+});
+$('startDraw').addEventListener('click', startDraw);
+$('endDraw').addEventListener('click', () => endDraw(true));
+$('undo').addEventListener('click', () => {
+  const w = D.wps.pop(); if (!w) return;
+  w.m.remove();
+  if (D.legs.length) { D.legs.pop(); D.legReq.pop(); }
+  styleWps(); refreshDraw();
+});
+$('loop').addEventListener('click', () => { if (D.wps.length >= 2) addWaypoint(D.wps[0].ll); });
+$('clearDraw').addEventListener('click', () => {
+  D.wps.forEach(w => w.m.remove()); D.wps = []; D.legs = []; D.legReq = [];
+  refreshDraw();
+});
+document.querySelectorAll('[data-route]').forEach(b => b.addEventListener('click', () => {
+  if (D.route === b.dataset.route) return;
+  D.route = prefs.route = b.dataset.route; savePrefs(); syncRouteButtons();
+  for (let i = 0; i < D.wps.length - 1; i++) computeLeg(i);
+  refreshDraw();
+}));
+$('routeName').addEventListener('input', () => { if (D.active) $('trackName').textContent = $('routeName').value || 'Nueva ruta'; });
+
+/* ---------- Perfil: mostrar y transparencia ---------- */
+function applyProfilePrefs() {
+  $('showProfile').checked = prefs.profile;
+  $('profile').hidden = !prefs.profile;
+  document.body.classList.toggle('no-profile', !prefs.profile);
+  $('profileAlphaRow').hidden = !prefs.profile;
+  $('profileAlpha').value = prefs.alpha;
+  const a = prefs.alpha / 100;
+  document.documentElement.style.setProperty('--profile-alpha', a);
+  const blur = a > 0.15 ? `blur(${Math.round(a * 10)}px)` : 'none';
+  $('profile').style.backdropFilter = blur; $('profile').style.webkitBackdropFilter = blur;
+  drawProfile();
+}
+$('showProfile').addEventListener('change', e => { prefs.profile = e.target.checked; savePrefs(); applyProfilePrefs(); if (!prefs.profile) hoverOut(); });
+$('profileAlpha').addEventListener('input', e => { prefs.alpha = +e.target.value; savePrefs(); applyProfilePrefs(); });
+
+/* ---------- Otros controles ---------- */
+$('file').addEventListener('change', e => { openFile(e.target.files[0]); e.target.value = ''; });
+$('fit').addEventListener('click', () => fitRoute());
+$('seglen').value = prefs.seglen;
+$('seglen').addEventListener('change', e => { prefs.seglen = e.target.value; savePrefs(); if (S.raw) analyze().catch(err => setStatus(err.message, true)); });
+$('showLabels').checked = prefs.labels;
+$('showLabels').addEventListener('change', e => { prefs.labels = e.target.checked; savePrefs(); updateLabels(); });
+$('exag').value = prefs.exag;
+$('exag').addEventListener('input', e => { prefs.exag = +e.target.value; savePrefs(); map.setTerrain({ source: 'dem', exaggeration: prefs.exag }); });
+for (const btn of [$('modeGpx'), $('modeTer')]) btn.addEventListener('click', () => {
+  if (!S.raw || btn.disabled || S.mode === btn.dataset.mode) return;
+  S.mode = btn.dataset.mode; syncMode();
+  analyze().catch(e => setStatus(e.message, true));
+});
+$('collapse').addEventListener('click', () => {
+  const open = $('body').hidden;
+  $('body').hidden = !open;
+  $('collapse').textContent = open ? '–' : '+';
+  $('collapse').setAttribute('aria-expanded', open);
+});
+if (window.innerWidth <= 640) $('settings').open = false;
+
+let dragDepth = 0;
+const hasFiles = e => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+window.addEventListener('dragenter', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; $('drop').hidden = false; });
+window.addEventListener('dragleave', e => { if (!hasFiles(e)) return; if (--dragDepth <= 0) { dragDepth = 0; $('drop').hidden = true; } });
+window.addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
+window.addEventListener('drop', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $('drop').hidden = true; openFile(e.dataTransfer.files[0]); });
+
+let rz; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(drawProfile, 120); });
+document.addEventListener('fullscreenchange', () => setTimeout(() => { map.resize(); drawProfile(); }, 150));
+
+/* ---------- PWA ---------- */
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+}
+let installEvt = null;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; $('install').hidden = false; });
+window.addEventListener('appinstalled', () => { $('install').hidden = true; installEvt = null; });
+$('install').addEventListener('click', async () => {
+  if (!installEvt) return;
+  installEvt.prompt();
+  await installEvt.userChoice;
+  installEvt = null; $('install').hidden = true;
+});
+// Abrir .gpx desde el sistema (app instalada en escritorio)
+if ('launchQueue' in window) {
+  window.launchQueue.setConsumer(async params => {
+    if (params.files && params.files.length) openFile(await params.files[0].getFile());
+  });
+}
+
+/* ---------- Arranque ---------- */
+applyProfilePrefs();
+syncRouteButtons();
+(function demo() {
+  // Ejemplo: Pradollano → Pico Veleta (trazado aproximado, altitudes del terreno)
+  const wp = [[-3.3965, 37.0935], [-3.3905, 37.0890], [-3.3850, 37.0858], [-3.3800, 37.0810],
+              [-3.3760, 37.0745], [-3.3720, 37.0680], [-3.3690, 37.0620], [-3.3665, 37.0568]];
+  if ('launchQueue' in window && new URLSearchParams(location.search).has('file')) return;
+  loadTrack('Ejemplo: Pradollano → Pico Veleta', densify(wp, 20));
+})();
+</script>
+</body>
+</html>
