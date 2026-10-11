@@ -186,6 +186,7 @@ body.drawing #map canvas{cursor:crosshair}
         <label for="seglen">Tramo</label>
         <select id="seglen">
           <option value="auto">Automático</option>
+          <option value="25">25 m</option>
           <option value="50">50 m</option>
           <option value="100">100 m</option>
           <option value="200">200 m</option>
@@ -436,7 +437,7 @@ function loadTile(z, x, y) {
   return tileCache.get(key);
 }
 async function terrainElevations(pts, totalLen) {
-  const z = totalLen > 80000 ? 13 : 14, n = 2 ** z;
+  const z = totalLen > 120000 ? 13 : totalLen > 60000 ? 14 : 15, n = 2 ** z;   // 15 = máximo detalle del modelo
   const loc = pts.map(p => {
     const x = (p.lon + 180) / 360 * n * 256;
     const s = Math.sin(p.lat * Math.PI / 180);
@@ -458,7 +459,8 @@ async function terrainElevations(pts, totalLen) {
 }
 
 /* ---------- Análisis ---------- */
-function autoLength(total) { return total < 5000 ? 50 : total < 30000 ? 100 : total < 80000 ? 200 : 500; }
+// Tramos cortos: con 200 m las rampas de MTB salían muy aplanadas
+function autoLength(total) { return total < 50000 ? 50 : total < 120000 ? 100 : 200; }
 
 function smooth(pts, W) {
   const out = new Array(pts.length);
@@ -524,11 +526,13 @@ async function analyze() {
     for (let i = lastI + 1; i < pts.length; i++) pts[i].e0 = pts[lastI].e0;
   }
 
-  const sm = smooth(pts, S.mode === 'terrain' ? 25 : 40);
-  pts.forEach((p, i) => p.e = sm[i]);
-
   const auto = autoLength(total);
   S.L = $('seglen').value === 'auto' ? auto : +$('seglen').value;
+
+  // Suavizado proporcional al tramo: quita el ruido sin borrar las rampas cortas
+  const W = S.mode === 'terrain' ? Math.max(20, Math.min(40, S.L * 0.5)) : Math.max(12, Math.min(40, S.L * 0.4));
+  const sm = smooth(pts, W);
+  pts.forEach((p, i) => p.e = sm[i]);
   $('seglen').options[0].textContent = `Automático (${auto >= 1000 ? auto / 1000 + ' km' : auto + ' m'})`;
 
   if (!S.pts || S.pts.length !== pts.length) S.sel = null;
@@ -565,8 +569,13 @@ function render() {
     if (i) { const de = pts[i].e - pts[i - 1].e; de > 0 ? up += de : down -= de; }
     max = Math.max(max, pts[i].e); min = Math.min(min, pts[i].e);
   }
-  const full = segs.filter(g => g.d1 - g.d0 >= S.L * 0.6);
-  const gmax = Math.max(...(full.length ? full : segs).map(g => g.g));
+  // Pendiente máxima: la rampa más dura en 50 m de recorrido, sea cual sea el tramo elegido
+  let gmax = -Infinity;
+  for (let i = 0, j = 0; i < pts.length; i++) {
+    while (j < pts.length - 1 && pts[j].d - pts[i].d < 50) j++;
+    if (pts[j].d - pts[i].d >= 47) gmax = Math.max(gmax, (pts[j].e - pts[i].e) / (pts[j].d - pts[i].d) * 100);
+  }
+  if (!isFinite(gmax)) gmax = Math.max(...segs.map(g => g.g));
   const total = pts[pts.length - 1].d;
   const stats = [
     [(total / 1000).toLocaleString('es-ES', { maximumFractionDigits: 2 }) + ' km', 'Distancia'],
