@@ -210,6 +210,7 @@ body.drawing #map canvas{cursor:crosshair}
       </div>
       <div class="sub">
         <label class="check"><input type="checkbox" id="showLabels" checked> Mostrar % sobre la línea</label>
+        <label class="check"><input type="checkbox" id="showArrows" checked> Flechas de dirección</label>
         <label class="check"><input type="checkbox" id="showProfile" checked> Mostrar perfil de altitud</label>
         <label class="check" id="followRow"><input type="checkbox" id="followProfile" checked> Llevar la vista al punto marcado en el perfil</label>
         <div class="ctl" id="profileAlphaRow">
@@ -253,7 +254,7 @@ if (NATIVE) {
 
 /* ---------- Preferencias guardadas ---------- */
 const PREFS_KEY = 'pendientes3d.prefs';
-const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true },
+const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true },
   (() => { try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch (e) { return {}; } })());
 function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {} }
 
@@ -352,6 +353,25 @@ const mapReady = new Promise(res => map.on('load', () => {
   map.addLayer({ id: 'route-line', type: 'line', source: 'route',
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': ['get', 'color'], 'line-width': w } });
+  // Flechas de dirección: icono dibujado en canvas, apuntando al norte y girado según el rumbo
+  const ac = document.createElement('canvas'); ac.width = ac.height = 64;
+  const ax = ac.getContext('2d');
+  ax.beginPath(); ax.moveTo(32, 6); ax.lineTo(56, 50); ax.lineTo(32, 38); ax.lineTo(8, 50); ax.closePath();
+  ax.lineJoin = 'round'; ax.lineWidth = 7; ax.strokeStyle = '#111'; ax.stroke();
+  ax.fillStyle = '#fff'; ax.fill();
+  map.addImage('arrow', ax.getImageData(0, 0, 64, 64), { pixelRatio: 2 });
+  map.addSource('arrows', { type: 'geojson', data: empty });
+  map.addLayer({ id: 'arrows', type: 'symbol', source: 'arrows',
+    layout: {
+      'icon-image': 'arrow',
+      'icon-size': ['interpolate', ['linear'], ['zoom'], 9, 0.6, 13, 0.9, 16, 1.3],
+      'icon-rotate': ['get', 'b'],
+      'icon-rotation-alignment': 'map',
+      'icon-pitch-alignment': 'map',
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
+      visibility: prefs.arrows ? 'visible' : 'none'
+    } });
   map.addLayer({ id: 'hover-pt', type: 'circle', source: 'hover',
     paint: { 'circle-radius': 7, 'circle-color': '#fff', 'circle-stroke-width': 3, 'circle-stroke-color': '#111' } });
   res();
@@ -551,6 +571,7 @@ async function analyze() {
 function clearTrack() {
   S.pts = S.segs = null; S.sel = null;
   if (map.getSource('route')) map.getSource('route').setData(empty);
+  if (map.getSource('arrows')) map.getSource('arrows').setData(empty);
   clearLabels();
   $('stats').innerHTML = '';
   hoverOut();
@@ -560,6 +581,7 @@ function clearTrack() {
 
 function render() {
   const { pts, segs } = S;
+  map.getSource('arrows').setData(arrowFeatures(pts));
   map.getSource('route').setData({
     type: 'FeatureCollection',
     features: segs.map(g => ({
@@ -599,6 +621,22 @@ function render() {
   updateLabels();
   drawProfile();
   updateExportButtons();
+}
+
+/* Flechas cada 5 km (cada 1 km en rutas de menos de 15 km), giradas en el sentido de la marcha */
+function bearingBetween(a, b) {
+  const toR = Math.PI / 180, y = Math.sin((b.lon - a.lon) * toR) * Math.cos(b.lat * toR);
+  const x = Math.cos(a.lat * toR) * Math.sin(b.lat * toR) - Math.sin(a.lat * toR) * Math.cos(b.lat * toR) * Math.cos((b.lon - a.lon) * toR);
+  return Math.atan2(y, x) / toR;
+}
+function arrowFeatures(pts) {
+  const total = pts[pts.length - 1].d, step = total < 15000 ? 1000 : 5000, out = [];
+  for (let d = step; d < total - step * 0.3; d += step) {
+    const i = idxAt(d), a = pts[idxAt(Math.max(0, d - 30))], b = pts[idxAt(Math.min(total, d + 30))];
+    if (a === b) continue;
+    out.push({ type: 'Feature', properties: { b: bearingBetween(a, b) }, geometry: { type: 'Point', coordinates: [pts[i].lon, pts[i].lat] } });
+  }
+  return { type: 'FeatureCollection', features: out };
 }
 
 /* Etiquetas de % : solo las que caben a esta escala y están en pantalla */
@@ -1041,6 +1079,11 @@ function applyBasemap() {
 document.querySelectorAll('[data-basemap]').forEach(b => b.addEventListener('click', () => {
   prefs.basemap = b.dataset.basemap; savePrefs(); applyBasemap();
 }));
+$('showArrows').checked = prefs.arrows;
+$('showArrows').addEventListener('change', e => {
+  prefs.arrows = e.target.checked; savePrefs();
+  if (map.getLayer('arrows')) map.setLayoutProperty('arrows', 'visibility', prefs.arrows ? 'visible' : 'none');
+});
 $('followProfile').checked = prefs.follow;
 $('followProfile').addEventListener('change', e => { prefs.follow = e.target.checked; savePrefs(); });
 
