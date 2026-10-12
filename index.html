@@ -682,16 +682,20 @@ const mapReady = new Promise(res => map.on('load', () => {
     } });
   map.addLayer({ id: 'hover-pt', type: 'circle', source: 'hover',
     paint: { 'circle-radius': 7, 'circle-color': '#fff', 'circle-stroke-width': 3, 'circle-stroke-color': '#111' } });
-  // Línea paralela con el Catastro: verde si la ruta va por dominio público (parcela 9000+), roja si
-  // va por parcela particular. Se dibuja desplazada unos metros a la derecha del trazado.
+  // Línea del Catastro: dos trazos finos y paralelos, uno a cada lado del recorrido, que solo cambian
+  // de color según el tipo de parcela (verde: dominio público · rojo: particular). Sin bordes ni
+  // rellenos: es un aviso, no debe competir con el trazado de pendientes.
   // OJO: la fuente se llama 'catastroRuta' y no 'catastro', que ya es la capa raster de parcelas.
   map.addSource('catastroRuta', { type: 'geojson', data: empty });
-  map.addLayer({ id: 'catastroCasing', type: 'line', source: 'catastroRuta',
+  // Dos trazos finos, uno a cada lado y pegados al recorrido. El grosor es fino a propósito (1,4-2,6 px)
+  // y el color va sin borde ni relleno: es un aviso, no debe competir con el trazado de pendientes.
+  const grosorCat = ['interpolate', ['linear'], ['zoom'], 10, 1.4, 14, 2, 17, 2.6];
+  map.addLayer({ id: 'catastroIzq', type: 'line', source: 'catastroRuta',
     layout: { 'line-cap': 'round', 'line-join': 'round' },
-    paint: { 'line-color': '#000', 'line-opacity': 0.45, 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 6, 14, 9, 17, 13] } });
-  map.addLayer({ id: 'catastroLinea', type: 'line', source: 'catastroRuta',
+    paint: { 'line-color': ['get', 'color'], 'line-width': grosorCat, 'line-opacity': 0.95 } });
+  map.addLayer({ id: 'catastroDer', type: 'line', source: 'catastroRuta',
     layout: { 'line-cap': 'round', 'line-join': 'round' },
-    paint: { 'line-color': ['get', 'color'], 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 4, 14, 6, 17, 10], 'line-opacity': 1 } });
+    paint: { 'line-color': ['get', 'color'], 'line-width': grosorCat, 'line-opacity': 0.95 } });
   // Si MapLibre falla al mover la cámara (o cualquier otra cosa), que se vea en el estado en vez de
   // quedarse en silencio: es lo que impedía saber por qué no se encuadraba en el móvil.
   map.on('error', e => {
@@ -2593,11 +2597,11 @@ async function clasificarPunto(lon, lat) {
   CATR.cache.set(k, valor);
   return valor;
 }
-// Puntos de muestreo a lo largo de la ruta: cada 100 m, entre 20 y 500 muestras. Son consultas a un
-// servicio público, así que se acota el número para no castigarlo con rutas muy largas.
+// Puntos de muestreo a lo largo de la ruta: cada 30 m (para que los trazos salgan continuos, sin
+// huecos entre muestra y muestra), con un máximo de 900 consultas para no castigar al servicio.
 function muestrasCatastro(pts) {
   const total = pts[pts.length - 1].d;
-  const n = Math.max(2, Math.min(500, Math.ceil(total / 100)));
+  const n = Math.max(2, Math.min(900, Math.ceil(total / 30)));
   const paso = total / n, out = [];
   let j = 0;
   for (let i = 0; i <= n; i++) {
@@ -2635,7 +2639,7 @@ async function catastroLinea() {
     return;
   }
   if (!S.pts || S.pts.length < 2 || !map.getSource('catastroRuta')) { limpiarCatastro(); return; }
-  if (!map.getLayer('catastroLinea')) {
+  if (!map.getLayer('catastroIzq') || !map.getLayer('catastroDer')) {
     // No debería pasar (las capas se crean al cargar el mapa), pero si pasa conviene saberlo
     setStatusProgreso('No se puede pintar el tipo de parcela en la ruta (falta la capa del mapa).', 9000);
     return;
@@ -2667,29 +2671,43 @@ async function recorrerCatastro() {
   if (gen !== CATR.generacion) return;
   const features = [];
   let publico = 0, particular = 0, sin = 0;
-  let actual = null;
-  const cerrar = () => {
-    if (actual && actual.coords.length >= 2) {
-      features.push({ type: 'Feature', properties: { color: CAT_COLORES[actual.tipo] }, geometry: { type: 'LineString', coordinates: desplazarLinea(actual.coords, 8) } });
-    }
-    actual = null;
-  };
+  // El color se calcula por puntos y luego se dibuja dos veces, desplazado a cada lado: así los dos
+  // trazos son continuos a lo largo de toda la ruta y solo cambian de color cuando cambia el tipo de
+  // parcela. Con un solo desplazamiento se vería un trazo nada más, y lo que se pide son dos.
+  const tipos = [];
   for (let i = 0; i < res.length; i++) {
     const tipo = res[i].tipo;
+    tipos.push(tipo);
+    if (tipo === 'publico') publico++;
+    else if (tipo === 'particular') particular++;
+    else sin++;
+  }
+  // Tramos: cada vez que cambia el tipo (o falta), se empieza un tramo nuevo. Un tramo de un solo
+  // punto se alarga con el anterior para que el cambio de color se vea aunque la parcela sea corta.
+  const tramos = [];
+  let actual = null;
+  const cerrar = () => { if (actual && actual.coords.length >= 2) tramos.push(actual); actual = null; };
+  for (let i = 0; i < res.length; i++) {
+    const tipo = tipos[i];
     if (tipo === 'publico' || tipo === 'particular') {
-      if (tipo === 'publico') publico++; else particular++;
       if (!actual || actual.tipo !== tipo) {
-        // Las muestras alternan mucho (una parcela linda con un camino), así que un tramo de un solo
-        // punto también se dibuja: se alarga con la muestra anterior para que se vea el cambio.
         const inicio = i > 0 ? [[muestras[i - 1].lon, muestras[i - 1].lat]] : [];
         cerrar();
         actual = { tipo, coords: inicio.concat([[muestras[i].lon, muestras[i].lat]]) };
       } else {
         actual.coords.push([muestras[i].lon, muestras[i].lat]);
       }
-    } else { sin++; cerrar(); }
+    } else cerrar();
   }
   cerrar();
+  // Se separan lo justo para que se distingan del trazado de pendientes y entre sí: pegados al track,
+  // pero sin llegar a confundirse con él.
+  const SEPARACION = 4;   // metros a cada lado del eje del recorrido
+  for (const t of tramos) {
+    const color = CAT_COLORES[t.tipo];
+    features.push({ type: 'Feature', properties: { color, lado: 'izq' }, geometry: { type: 'LineString', coordinates: desplazarLinea(t.coords, -SEPARACION) } });
+    features.push({ type: 'Feature', properties: { color, lado: 'der' }, geometry: { type: 'LineString', coordinates: desplazarLinea(t.coords, SEPARACION) } });
+  }
   map.getSource('catastroRuta').setData({ type: 'FeatureCollection', features });
   CATR.ultimo = { puntos: res.length, publico, particular, sin, errores, refs: new Set(res.map(r => r.ref).filter(Boolean)).size };
   const partes = [];

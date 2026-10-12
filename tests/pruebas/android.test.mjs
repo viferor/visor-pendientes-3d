@@ -382,7 +382,7 @@ await test('T-catastro', 'La línea paralela marca público en verde y particula
   await a2.loadTrack('Catastro', rutaSintetica(400), false);
   const muestras = a2.muestrasCatastro(a2.S.pts);
   const total = a2.S.pts[a2.S.pts.length - 1].d;
-  assert(muestras.length >= 2 && muestras.length <= 600, 'número de muestras fuera de rango: ' + muestras.length);
+  assert(muestras.length >= 2 && muestras.length <= 901, 'número de muestras fuera de rango: ' + muestras.length);
   near(muestras[0].lon, a2.S.pts[0].lon, 1e-6, 'la primera muestra es el inicio');
   near(muestras[muestras.length - 1].lat, a2.S.pts[a2.S.pts.length - 1].lat, 1e-3, 'la última muestra es el final');
   // La línea paralela va desplazada, no encima
@@ -421,10 +421,13 @@ await test('T-catastro-2', 'La línea del Catastro se pinta según las respuesta
   const datos = app2.mapStub.getSource('catastroRuta') && app2.mapStub._setData.filter(([id]) => id === 'catastroRuta').pop();
   assert(datos, 'debería haberse actualizado la fuente de la línea del Catastro');
   const features = (datos[1] && datos[1].features) || [];
-  assert(features.length >= 1, 'debería haber al menos un tramo pintado: ' + features.length);
+  assert(features.length >= 2, 'debería haber al menos un tramo pintado en cada lado: ' + features.length);
   const colores = new Set(features.map(f => f.properties.color));
   assert(colores.has(a2.CAT_COLORES.publico), 'debería haber tramos verdes (dominio público): ' + [...colores].join(', '));
   assert(colores.has(a2.CAT_COLORES.particular), 'debería haber tramos rojos (particulares): ' + [...colores].join(', '));
+  // Dos trazos paralelos, uno a cada lado
+  const lados = new Set(features.map(f => f.properties.lado));
+  assert(lados.has('izq') && lados.has('der'), 'debería haber trazos a los dos lados: ' + [...lados].join(', '));
   assert(n > 0, 'debería haber consultado el servicio del Catastro');
   const resumen = a2.CATR.ultimo;
   assert(resumen && resumen.publico > 0 && resumen.particular > 0, 'el resumen debería contar ambos tipos: ' + JSON.stringify(resumen));
