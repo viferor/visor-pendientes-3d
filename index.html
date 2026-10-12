@@ -630,6 +630,15 @@ const mapReady = new Promise(res => map.on('load', () => {
     } });
   map.addLayer({ id: 'hover-pt', type: 'circle', source: 'hover',
     paint: { 'circle-radius': 7, 'circle-color': '#fff', 'circle-stroke-width': 3, 'circle-stroke-color': '#111' } });
+  // Si MapLibre falla al mover la cámara (o cualquier otra cosa), que se vea en el estado en vez de
+  // quedarse en silencio: es lo que impedía saber por qué no se encuadraba en el móvil.
+  map.on('error', e => {
+    const msg = (e && e.error && e.error.message) || 'error del mapa';
+    if (!S.errorMapa || Date.now() - S.errorMapa.t > 5000) {
+      S.errorMapa = { t: Date.now(), msg };
+      setStatus('Aviso del mapa: ' + msg, true);
+    }
+  });
   marcarEnTrack = (ll, quieto) => {   // ya está el mapa listo: se puede mover el punto
     if (!S.pts || !S.pts.length) return null;
     const i = indiceMasCercano(ll);
@@ -1730,54 +1739,77 @@ over.addEventListener('pointerdown', () => { if (PLAY.on) pausePlay(); }, true);
 /* ---------- Cámara ---------- */
 // Encuadre en curso: si el usuario toca el mapa antes de que termine, se repite sin animación.
 let encuadrePendiente = null, encuadreTimer = null;
-function fitRoute(animate = true) {
-  if (!S.pts) return;
-  const b = new maplibregl.LngLatBounds();
-  S.pts.forEach(p => b.extend([p.lon, p.lat]));
+// El lienzo del mapa tiene que medir exactamente lo que mide su contenedor: si no, aparece una franja
+// sin pintar (el «margen negro» que se veía en el móvil) y los encuadres salen desplazados. Se avisa a
+// MapLibre del tamaño real al arrancar, al girar el móvil, al abrir/cerrar el perfil y al plegar el panel.
+function ajustarTamanoMapa() {
+  try { map.resize(); } catch (e) {}
+  drawProfile();
+}
+// Huecos que dejan los paneles, en píxeles, para no encuadrar la ruta debajo de ellos.
+function huecosMapa() {
   const panel = $('panel').getBoundingClientRect(), prof = $('profile').getBoundingClientRect();
   const wide = window.innerWidth > 640;
-  map.fitBounds(b, {
-    padding: { top: wide ? 70 : panel.bottom + 20, bottom: prof.height + 50, left: wide ? panel.right + 40 : 30, right: 70 },
-    pitch: 60, bearing: map.getBearing(), duration: animate ? 1600 : 0, maxZoom: 16
-  });
-  // Se apunta el encuadre para poder comprobarlo desde Ajustes (botón «Info de encuadre») y en las
-  // pruebas: así se distingue «no se ha pedido encuadrar» de «se pidió y la vista no se movió».
+  return {
+    arriba: wide ? 70 : Math.round(panel.bottom + 20),
+    abajo: Math.round(prof.height + 50),
+    izquierda: wide ? Math.round(panel.right + 40) : 30,
+    derecha: 70
+  };
+}
+// Centro y caja de la ruta
+function cajaRuta() {
   const lons = S.pts.map(p => p.lon), lats = S.pts.map(p => p.lat);
+  const oeste = Math.min(...lons), este = Math.max(...lons), sur = Math.min(...lats), norte = Math.max(...lats);
+  return { oeste, este, sur, norte, centro: [(oeste + este) / 2, (sur + norte) / 2] };
+}
+// Mueve la cámara para que se vea toda la ruta. Se calcula el zoom a mano y se usa easeTo (la misma
+// llamada que el arrastre y el zoom) en vez de fitBounds: en un móvil Android se ha visto que
+// fitBounds no llegaba a mover la cámara, y así el encuadre no depende de su cálculo interno.
+function encuadrarRuta(animate) {
+  if (!S.pts || S.pts.length < 2) return;
+  const c = cajaRuta(), pad = huecosMapa();
+  const ancho = map.getContainer().clientWidth || window.innerWidth;
+  const alto = map.getContainer().clientHeight || window.innerHeight;
+  const dispX = ancho - pad.izquierda - pad.derecha, dispY = alto - pad.arriba - pad.abajo;
+  // Si los paneles dejan muy poco hueco, se usan huecos mínimos en vez de no encuadrar nada
+  const dx = Math.max(80, dispX), dy = Math.max(120, dispY);
+  const aLat = Math.max(1e-6, c.norte - c.sur), aLon = Math.max(1e-6, c.este - c.oeste);
+  const mPorLon = 111320 * Math.cos(c.centro[1] * Math.PI / 180);
+  // El relieve inclinado hace que se vea menos alto de lo que dice la caja: se pide un 35 % más
+  const mAncho = aLon * mPorLon * 1.15, mAlto = aLat * 110540 * 1.35;
+  const zX = Math.log2(dx * 156543.03392 / Math.max(1, mAncho));
+  const zY = Math.log2(dy * 156543.03392 / Math.max(1, mAlto));
+  const zoom = Math.max(3, Math.min(16, Math.min(zX, zY)));
+  const destino = { center: c.centro, zoom, pitch: 60, bearing: map.getBearing(), duration: animate ? 1600 : 0 };
+  map.easeTo(destino);
   S.ultimoEncuadre = {
     puntos: S.pts.length,
-    centro: [+((Math.min(...lons) + Math.max(...lons)) / 2).toFixed(4), +((Math.min(...lats) + Math.max(...lats)) / 2).toFixed(4)],
-    caja: [+Math.min(...lons).toFixed(4), +Math.min(...lats).toFixed(4), +Math.max(...lons).toFixed(4), +Math.max(...lats).toFixed(4)],
-    animado: !!animate, cuando: Date.now()
+    centro: [+c.centro[0].toFixed(4), +c.centro[1].toFixed(4)],
+    caja: [+c.oeste.toFixed(4), +c.sur.toFixed(4), +c.este.toFixed(4), +c.norte.toFixed(4)],
+    zoom: +zoom.toFixed(2), huecos: pad, animado: !!animate, cuando: Date.now()
   };
-  // En móvil la animación puede quedarse a medias (la barra del navegador cambia de tamaño al cargar
-  // el archivo y MapLibre cancela el vuelo) o no llegar a moverse. Dos redes de seguridad:
-  //  - si al terminar el movimiento la vista no se parece a lo pedido, se encuadra otra vez sin animación;
-  //  - y si en 1,5 s no se ha movido nada, se encuadra sin animación directamente.
+  // Redes de seguridad por si la animación no llega a moverse (visto en algún Android):
+  // si al terminar el movimiento la vista no se parece a lo pedido, o si en 1,5 s no se ha movido
+  // nada, se encuadra otra vez sin animación.
   if (animate) {
-    const caja = S.ultimoEncuadre.caja;
-    const centro = S.ultimoEncuadre.centro, cuando = S.ultimoEncuadre.cuando;
-    encuadrePendiente = { caja, hasta: Date.now() + 6000 };
+    encuadrePendiente = { caja: S.ultimoEncuadre.caja, hasta: Date.now() + 6000 };
     clearTimeout(encuadreTimer);
+    const centro = S.ultimoEncuadre.centro, cuando = S.ultimoEncuadre.cuando;
     encuadreTimer = setTimeout(() => {
-      if (!S.ultimoEncuadre || S.ultimoEncuadre.cuando !== cuando) return;   // ya se ha encuadrado otra ruta
-      const c = map.getCenter();
-      if (Math.abs(c.lng - centro[0]) < 0.001 && Math.abs(c.lat - centro[1]) < 0.001) return;   // se movió
+      if (!S.ultimoEncuadre || S.ultimoEncuadre.cuando !== cuando) return;
+      const c2 = map.getCenter();
+      if (Math.abs(c2.lng - centro[0]) < 0.001 && Math.abs(c2.lat - centro[1]) < 0.001) return;   // se movió
       repetirEncuadreSiToca();
     }, 1500);
   }
 }
+function fitRoute(animate = true) { encuadrarRuta(animate); }
 function repetirEncuadreSiToca() {
   if (!encuadrePendiente || Date.now() > encuadrePendiente.hasta) { encuadrePendiente = null; return; }
   encuadrePendiente = null;
   clearTimeout(encuadreTimer);
-  const b = new maplibregl.LngLatBounds();
-  S.pts.forEach(p => b.extend([p.lon, p.lat]));
-  const panel = $('panel').getBoundingClientRect(), prof = $('profile').getBoundingClientRect();
-  const wide = window.innerWidth > 640;
-  map.fitBounds(b, {
-    padding: { top: wide ? 70 : panel.bottom + 20, bottom: prof.height + 50, left: wide ? panel.right + 40 : 30, right: 70 },
-    pitch: 60, bearing: map.getBearing(), duration: 0, maxZoom: 16
-  });
+  encuadrarRuta(false);
 }
 // Si la animación del encuadre se corta (pasa en el móvil), `moveend` llega antes de tiempo: si la
 // vista no se parece a lo pedido, se encuadra otra vez sin animación. La comparación es por centro y
@@ -2463,6 +2495,7 @@ $('collapse').addEventListener('click', () => {
   $('collapse').textContent = open ? '–' : '+';
   $('collapse').setAttribute('aria-expanded', open);
   $('collapse').title = open ? 'Plegar panel' : 'Mostrar controles';
+  setTimeout(ajustarTamanoMapa, 50);   // el panel cambia de tamaño: el lienzo del mapa también
 });
 if (window.innerWidth <= 640) $('settings').open = false;
 
@@ -2473,7 +2506,10 @@ window.addEventListener('dragleave', e => { if (!hasFiles(e)) return; if (--drag
 window.addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
 window.addEventListener('drop', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $('drop').hidden = true; openFile(e.dataTransfer.files[0]); });
 
-let rz; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(drawProfile, 120); });
+let rz; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(ajustarTamanoMapa, 120); });
+window.addEventListener('orientationchange', () => setTimeout(ajustarTamanoMapa, 300));
+if (window.visualViewport) window.visualViewport.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(ajustarTamanoMapa, 150); });
+mapReady.then(() => setTimeout(ajustarTamanoMapa, 400));
 // Al tocar el mapa, si el encuadre de la ruta se quedó a medias (típico en móvil), se repite sin
 // animación para que la vista acabe mostrando el recorrido.
 map.on('touchstart', repetirEncuadreSiToca);
@@ -2560,31 +2596,36 @@ $('buscarAct').addEventListener('click', () => buscarActualizacion(true));
 // Diagnóstico: mide la ventana, la zona libre de interfaz y el último encuadre. Sirve para saber si
 // el problema de «no se mueve la vista» está en el encuadre o en el hueco que dejan los paneles.
 function infoEncuadre() {
-  const e = S.ultimoEncuadre;
-  const panel = $('panel').getBoundingClientRect(), prof = $('profile').getBoundingClientRect();
-  const c = map.getCenter();
-  const pad = {
-    arriba: window.innerWidth > 640 ? 70 : Math.round(panel.bottom + 20),
-    abajo: Math.round(prof.height + 50),
-    izquierda: window.innerWidth > 640 ? Math.round(panel.right + 40) : 30, derecha: 70
-  };
-  const libre = map.getContainer().getBoundingClientRect();
-  const libreAlto = Math.round(libre.height - pad.arriba - pad.abajo), libreAncho = Math.round(libre.width - pad.izquierda - pad.derecha);
-  const partes = [
-    `Ventana ${window.innerWidth}×${window.innerHeight} · mapa ${Math.round(libre.width)}×${Math.round(libre.height)}`,
-    `Huecos: arriba ${pad.arriba}, abajo ${pad.abajo}, izq ${pad.izquierda}, der ${pad.derecha}`,
-    `Zona libre para la ruta: ${libreAncho}×${libreAlto}` + (libreAlto < 60 || libreAncho < 60 ? '  ← ¡DEMASIADO PEQUEÑA!' : ''),
-    `Perfil: alto ${Math.round(prof.height)} · panel: abajo ${Math.round(panel.bottom)} · perfil visible: ${!$('profile').hidden}`,
-    `Cámara: centro ${c.lng.toFixed(4)}, ${c.lat.toFixed(4)} · zoom ${map.getZoom().toFixed(2)}`
-  ];
-  partes.push(e
-    ? `Último encuadre: ${e.puntos} puntos · centro ${e.centro[0]}, ${e.centro[1]} · caja ${e.caja.join(' / ')} · animado: ${e.animado ? 'sí' : 'no'}`
-    : 'Último encuadre: ninguno todavía');
   const el = $('actEstado');
-  el.hidden = false;
-  el.classList.remove('err');
-  el.innerHTML = '';
-  for (const t of partes) { const p = document.createElement('div'); p.textContent = t; el.appendChild(p); }
+  try {
+    const e = S.ultimoEncuadre;
+    const c = map.getCenter();
+    const cont = map.getContainer();
+    const libre = cont.getBoundingClientRect();
+    const partes = [
+      `Ventana ${window.innerWidth}×${window.innerHeight} · mapa ${Math.round(libre.width)}×${Math.round(libre.height)} · cliente ${cont.clientWidth}×${cont.clientHeight}`,
+      `Cámara: centro ${c.lng.toFixed(4)}, ${c.lat.toFixed(4)} · zoom ${map.getZoom().toFixed(2)}`
+    ];
+    if (e) {
+      partes.push(`Huecos usados: arriba ${e.huecos.arriba}, abajo ${e.huecos.abajo}, izq ${e.huecos.izquierda}, der ${e.huecos.derecha}`);
+      partes.push(`Último encuadre: ${e.puntos} puntos · centro ${e.centro[0]}, ${e.centro[1]} · zoom ${e.zoom}`);
+      partes.push(`Caja de la ruta: ${e.caja.join(' / ')} · animado: ${e.animado ? 'sí' : 'no'}`);
+      const coincide = Math.abs(c.lng - e.centro[0]) < 0.002 && Math.abs(c.lat - e.centro[1]) < 0.002;
+      partes.push(coincide ? 'La cámara está donde se pidió' : 'OJO: la cámara NO está donde se pidió');
+    } else {
+      partes.push('Último encuadre: ninguno todavía');
+    }
+    if (S.errorMapa) partes.push('Último error del mapa: ' + S.errorMapa.msg);
+    el.hidden = false;
+    el.classList.remove('err');
+    el.innerHTML = '';
+    for (const t of partes) { const p = document.createElement('div'); p.textContent = t; el.appendChild(p); }
+  } catch (err) {
+    // Si algo falla midiendo, se muestra igualmente: antes el botón no hacía nada visible
+    el.hidden = false;
+    el.classList.add('err');
+    el.textContent = 'No se pudo medir: ' + (err && err.message ? err.message : err);
+  }
 }
 for (const id of ['infoEncuadre', 'infoEncuadre2']) {
   const b = $(id);

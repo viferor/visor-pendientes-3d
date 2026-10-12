@@ -208,8 +208,6 @@ await test('Q4', 'Ajustes muestra la versión y permite buscar actualización', 
 await test('R-encuadre', 'Al cargar una ruta se pide encuadrarla y queda registrado', async () => {
   const app2 = loadApp();
   const a2 = app2.api();
-  const llamadas = [];
-  app2.mapStub.fitBounds = (b, o) => { llamadas.push({ dur: o && o.duration, pad: o && o.padding }); return app2.mapStub; };
   // Se espera a que el arranque de la app termine (carga el ejemplo y lo encuadra): si no, esa carga
   // escribiría su propio encuadre encima del que queremos comprobar.
   const t0 = Date.now();
@@ -221,39 +219,66 @@ await test('R-encuadre', 'Al cargar una ruta se pide encuadrarla y queda registr
     await new Promise(r => setTimeout(r, 100));
   }
   a2.S.ultimoEncuadre = null;
-  llamadas.length = 0;
+  app2.mapStub._easeTo = [];
   const lejana = [{ lat: 40.0, lon: -4.0, ele: 600, t: NaN }, { lat: 40.01, lon: -4.0, ele: 620, t: NaN }];
   await a2.loadTrack('Lejana', lejana, false);
   await new Promise(r => setTimeout(r, 300));
-  assert(llamadas.length >= 1, 'debería haberse pedido encuadrar la ruta al cargarla');
-  assert(llamadas[0].dur === 1600, 'el encuadre inicial debería ir animado: ' + llamadas[0].dur);
+  const llamadas = app2.mapStub._easeTo || [];
+  assert(llamadas.length >= 1, 'debería haberse pedido encuadrar la ruta al cargarla (easeTo)');
+  eq(llamadas[0].duration, 1600, 'el encuadre inicial debería ir animado: ' + llamadas[0].duration);
+  near(llamadas[0].center[0], -4, 0.001, 'centro en longitud que se pide al mapa');
+  near(llamadas[0].center[1], 40.005, 0.001, 'centro en latitud que se pide al mapa');
+  assert(llamadas[0].zoom > 3 && llamadas[0].zoom <= 16, 'zoom fuera de rango: ' + llamadas[0].zoom);
   const u = a2.S.ultimoEncuadre;
   assert(u && u.puntos === 2, 'debería quedar registrado el encuadre de ESTA ruta: ' + JSON.stringify(u));
-  eq(u.centro[0], -4, 'centro en longitud');
-  near(u.centro[1], 40.005, 0.0005, 'centro en latitud');
-  return { detail: `fitBounds con ${llamadas[0].dur} ms de animación y centro ${u.centro.join(', ')} (registrado para poder comprobarlo en el móvil)` };
+  return { detail: `easeTo animado 1600 ms al centro ${llamadas[0].center.join(', ')} con zoom ${u.zoom}` };
 });
 
 await test('R-encuadre-2', 'Si el encuadre se queda a medias, se repite sin animación', async () => {
   const app2 = loadApp();
   const a2 = app2.api();
-  const llamadas = [];
-  app2.mapStub.fitBounds = (b, o) => { llamadas.push(o && o.duration); return app2.mapStub; };
+  // Se espera al arranque, como en la prueba anterior
+  const t0 = Date.now();
+  let ultimo = null, desde = Date.now();
+  while (Date.now() - t0 < 6000) {
+    const actual = a2.S.name;
+    if (actual && actual !== ultimo) { ultimo = actual; desde = Date.now(); }
+    else if (actual && Date.now() - desde > 400) break;
+    await new Promise(r => setTimeout(r, 100));
+  }
   const lejana = [{ lat: 40.0, lon: -4.0, ele: 600, t: NaN }, { lat: 40.01, lon: -4.0, ele: 620, t: NaN }];
   await a2.loadTrack('Lejana', lejana, false);
   await new Promise(r => setTimeout(r, 300));
-  const antes = llamadas.length;
+  app2.mapStub._easeTo = [];
   // 1) El usuario toca el mapa con el encuadre aún pendiente → se repite sin animación
   a2.repetirEncuadreSiToca();
-  assert(llamadas.length === antes + 1, 'debería repetirse el encuadre al tocar el mapa');
-  eq(llamadas[llamadas.length - 1], 0, 'la repetición debe ser sin animación (para que no se corte otra vez)');
-  // 2) La vista no se parece a lo pedido (la animación se cortó) → también se repite
+  const llamadas = app2.mapStub._easeTo || [];
+  assert(llamadas.length === 1, 'debería repetirse el encuadre al tocar el mapa: ' + llamadas.length);
+  eq(llamadas[0].duration, 0, 'la repetición debe ser sin animación (para que no se corte otra vez)');
+  // 2) Si la vista no se parece a lo pedido (la animación se cortó) → también se repite
   a2.fitRoute(true);
-  const trasFit = llamadas.length;
+  app2.mapStub._easeTo = [];
   app2.mapStub.getBounds = () => ({ getWest: () => -70, getEast: () => -60, getSouth: () => 10, getNorth: () => 20 });
   a2.revisarEncuadrePendiente();
-  assert(llamadas.length === trasFit + 1, 'si la vista quedó lejos de la ruta, debería reencuadrarse al terminar el movimiento');
-  return { detail: `repite el encuadre al tocar el mapa y al detectar que la vista quedó en otro sitio (${llamadas.length} peticiones en total, la última sin animación)` };
+  assert((app2.mapStub._easeTo || []).length === 1, 'si la vista quedó lejos de la ruta, debería reencuadrarse al terminar el movimiento');
+  return { detail: 'repite el encuadre al tocar el mapa y al ver que la vista quedó en otro sitio, las dos veces sin animación' };
+});
+
+await test('R-encuadre-3', 'El botón «i» del panel muestra las medidas al pulsarlo de verdad', async () => {
+  const app2 = loadApp();
+  const a2 = app2.api();
+  await a2.loadTrack('Medir', rutaSintetica(40), false);
+  const boton = app2.el('infoEncuadre2');
+  assert(boton, 'debería existir el botón «i» en el panel');
+  const manejadores = boton.click();   // se ejecutan los manejadores reales de «click»
+  assert(manejadores >= 1, 'el botón «i» no tiene ningún manejador de click enganchado');
+  const salida = app2.el('actEstado');
+  assert(!salida.hidden, 'debería mostrarse el panel de medidas');
+  const texto = (salida.children || []).map(c => c.textContent).join(' | ');
+  assert(/Ventana/.test(texto), 'debería decir el tamaño de la ventana: ' + texto);
+  assert(/Cámara: centro/.test(texto), 'debería decir dónde está la cámara: ' + texto);
+  assert(/Último encuadre|ninguno/.test(texto), 'debería decir el último encuadre: ' + texto);
+  return { detail: texto.slice(0, 160) };
 });
 
 await test('Q5', 'Si hay versión nueva se avisa y se ofrece recargar (sin recargar sola)', async () => {

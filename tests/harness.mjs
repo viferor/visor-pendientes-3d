@@ -76,13 +76,19 @@ class QNode {
   appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
   removeChild(c) { this.children = this.children.filter(x => x !== c); return c; }
   remove() { if (this.parentNode) this.parentNode.removeChild(this); }
-  addEventListener() {}
+  addEventListener(t, cb) { (this._ev = this._ev || {})[t] = (this._ev[t] || []).concat(cb); }
   removeEventListener() {}
   dispatchEvent() { return true; }
   setPointerCapture() {}
   releasePointerCapture() {}
   focus() {}
-  click() {}
+  // Ejecuta los manejadores de «click» de verdad, para que las pruebas comprueben que el botón hace
+  // algo y no solo que el código existe. Devuelve cuántos manejadores había.
+  click() {
+    const lista = (this._ev && this._ev.click) || [];
+    for (const cb of lista) cb({ target: this, preventDefault() {}, stopPropagation() {} });
+    return lista.length;
+  }
   getBoundingClientRect() { return { width: 800, height: 170, left: 0, top: 0, right: 800, bottom: 170, x: 0, y: 0 }; }
   getContext() { return (createCtxRef.fn || makeCanvasCtx)(); }
   toDataURL() { return 'data:,'; }
@@ -362,10 +368,13 @@ export function loadApp({ fetchImpl, imageMode, AndroidGpx } = {}) {
     addImage() {}, hasImage() { return false; },
     setLayoutProperty(id, k, v) { const l = mapLayers.get(id); if (l) (l.layout = l.layout || {})[k] = v; },
     setPaintProperty(id, k, v) { const l = mapLayers.get(id); if (l) (l.paint = l.paint || {})[k] = v; },
-    setTerrain() {}, setSky() {}, resize() {}, easeTo() {}, jumpTo() {}, fitBounds() { return this; },
-    getCenter: () => ({ lat: 37.075, lng: -3.38 }), getZoom: () => 13, getBearing: () => 0, getPitch: () => 60,
+    setTerrain() {}, setSky() {}, jumpTo() {}, fitBounds() { return this; },
+    // Espías: se cuentan las llamadas y se guardan los destinos para poder comprobarlos
+    easeTo(o) { this._easeTo = (this._easeTo || []).concat([o]); },
+    getCenter: () => mapStub._centro || { lat: 37.075, lng: -3.38 }, getZoom: () => 13, getBearing: () => 0, getPitch: () => 60,
     getBounds: () => ({ getWest: () => -3.45, getEast: () => -3.30, getSouth: () => 37.0, getNorth: () => 37.15 }),
     getCanvasContainer: () => canvasProto, getCanvas: () => canvasProto, getContainer: () => canvasProto, unproject: () => ({ lng: -3.38, lat: 37.07 }),
+    resize() { this._resize = (this._resize || 0) + 1; },
     dragPan: { enable() {}, disable() {} }, queryRenderedFeatures: () => []
   };
 
