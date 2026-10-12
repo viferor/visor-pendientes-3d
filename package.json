@@ -4,6 +4,7 @@
   "private": true,
   "description": "Visor de Pendientes 3D: PWA y app Android (Capacitor)",
   "scripts": {
+    "test": "node tests/lanzador.mjs",
     "www": "node scripts/copy-www.mjs",
     "android:sync": "npm run www && cap sync android"
   },

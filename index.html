@@ -616,9 +616,13 @@ function parseGPX(text) {
     if (n && n.textContent.trim()) { name = n.textContent.trim(); break; }
   }
   const pts = [];
+  let descartados = 0;
   for (const p of nodes) {
     const lat = parseFloat(p.getAttribute('lat')), lon = parseFloat(p.getAttribute('lon'));
     if (!isFinite(lat) || !isFinite(lon)) continue;
+    // Coordenadas imposibles: no se pueden corregir sin inventar datos, así que se descartan
+    // (y se informa de cuántas veces ocurre, para no «arreglar» el archivo en silencio).
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) { descartados++; continue; }
     const e = [...p.children].find(c => c.localName === 'ele');
     const ele = e ? parseFloat(e.textContent) : NaN;
     const prev = pts[pts.length - 1];
@@ -638,7 +642,7 @@ function parseGPX(text) {
     pts.push({ lat, lon, ele, t, ...sens });
   }
   if (pts.length < 2) throw new Error('El GPX tiene menos de dos puntos útiles.');
-  return { name, pts };
+  return { name, pts, descartados };
 }
 
 /* ---------- GPX: escritura ---------- */
@@ -673,9 +677,15 @@ function haversine(a, b) {
 
 /* ---------- Altitud del terreno (teselas Terrarium) ---------- */
 const tileCache = new Map();
+// Cada tesela descodificada ocupa ~256 KB en memoria: se guardan las últimas y se desechan las
+// más antiguas para que una ruta larga (o cambiar varias veces de fuente de altitud) no llene la memoria.
+const TILE_CACHE_MAX = 600;
+const tileCacheSize = () => tileCache.size;
+const tileCacheKeys = () => [...tileCache.keys()];
 function loadTile(z, x, y) {
   const key = `${z}/${x}/${y}`;
   if (!tileCache.has(key)) {
+    if (tileCache.size >= TILE_CACHE_MAX) tileCache.delete(tileCache.keys().next().value);
     tileCache.set(key, new Promise((res, rej) => {
       const img = new Image();
       img.crossOrigin = 'anonymous';
@@ -795,9 +805,18 @@ async function analyze() {
   if (!S.pts || S.pts.length !== pts.length) S.sel = null;
   S.pts = pts;
   S.segs = buildSegments(pts, S.L);
+  // Aviso si el archivo traía varios segmentos separados: se han unido y el tramo que cruza
+  // el salto no es un camino real, así que conviene decirlo en vez de dibujarlo como si lo fuera.
+  let saltos = 0, mayorSalto = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const dd = pts[i].d - pts[i - 1].d, dt = (isFinite(pts[i].t) && isFinite(pts[i - 1].t)) ? Math.abs(pts[i].t - pts[i - 1].t) : 0;
+    if (dd > 2000 || (dd > 150 && dt > 4 * 3600 * 1000)) { saltos++; mayorSalto = Math.max(mayorSalto, dd); }
+  }
+  S.saltos = { n: saltos + 1, mayor: mayorSalto };
   render();
   setStatus(`Altitud ${S.mode === 'terrain' ? 'del modelo de terreno' : 'del GPX'} · tramos de ${S.L} m` +
-    (S.mode === 'terrain' && S.L < 25 ? ' · el relieve no tiene detalle para tramos tan cortos; usa la altitud del GPX' : ''));
+    (S.mode === 'terrain' && S.L < 25 ? ' · el relieve no tiene detalle para tramos tan cortos; usa la altitud del GPX' : '') +
+    (saltos ? ` · el archivo trae ${saltos + 1} segmentos separados (hueco mayor de ${fmtInt(mayorSalto)} m): el tramo que los cruza no es un camino real` : ''));
   return true;
 }
 
@@ -1143,6 +1162,13 @@ over.addEventListener('pointerleave', () => { if (!dragging) hoverOut(); });
 // en un pasillo alrededor de la ruta, en el orden en que se van a recorrer. El service worker las
 // guarda, así que el vuelo no se queda esperando y la siguiente vez sale de la caché.
 const PREF = { key: null, queue: [], running: 0, done: 0, total: 0, seen: new Set() };
+// Vacía la cola de precarga: al cambiar de ruta (o al empezar a dibujar) no tiene sentido
+// seguir pidiendo teselas del recorrido anterior. Lo que esté en vuelo termina, pero no se
+// encadenan más peticiones.
+function stopPrefetch() {
+  PREF.queue = [];
+  PREF.total = PREF.done;
+}
 function tileXY(lon, lat, z) {
   const n = 2 ** z, s = Math.sin(lat * Math.PI / 180);
   return [Math.floor((lon + 180) / 360 * n), Math.floor((0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n)];
@@ -1181,7 +1207,7 @@ function prefetchRoute(fromIdx, backwards) {
       }
     }
   }
-  PREF.queue = order.concat(PREF.queue);
+  PREF.queue = PREF.queue.concat(order);
   PREF.total += order.length;
   pumpPrefetch();
 }
@@ -1204,10 +1230,54 @@ function pumpPrefetch() {
 // Descarga el mapa elegido, las capas activas y el relieve en un pasillo alrededor de la ruta, y lo guarda en
 // una caché aparte ('pendientes3d-offline') que el service worker consulta primero y nunca recorta.
 const OFF = { cache: 'pendientes3d-offline', busy: false, cancel: false };
-const AVG_KB = { sat: 22, cyclosm: 18, ov: 4, ref: 6, dem: 60 };
+const AVG_KB = { sat: 22, cyclosm: 18, ov: 4, ref: 6, dem: 60, vt: 30 };
+// Plantilla de los tiles vectoriales de OpenFreeMap (los nombres de pistas, sendas y cimas).
+// La fuente del mapa usa el TileJSON de OpenFreeMap, que cambia de nombre de carpeta al actualizar
+// los datos, por eso aquí no se puede leer de map.getSource('ofm').tiles: se fija la plantilla.
+// El TileJSON declara maxzoom 14, que es el límite que se respeta al guardar.
+const OFM_VT = 'https://tiles.openfreemap.org/planet/20261004_113936_pt/{z}/{x}/{y}.pbf';
+const OFM_MAXZOOM = 14;
+// Nombre corto de cada caché/fichero guardado, para poder decirle al usuario qué tiene sin cobertura
+function offlineTileKind(u) {
+  if (/openfreemap\.org\/fonts\//.test(u)) return 'fuentes';
+  if (/tiles\.openfreemap\.org\//.test(u)) return 'pistas y nombres';
+  if (/World_Imagery/.test(u)) return prefs.basemap === 'cyclosm' ? 'satélite (debajo)' : 'satélite';
+  if (/World_Transportation|World_Boundaries/.test(u)) return 'híbrido (carreteras y nombres)';
+  if (/cyclosm-lite/.test(u)) return 'sendas CyclOSM';
+  if (/cyclosm/.test(u)) return 'CyclOSM';
+  if (/\/catastro\//.test(u)) return 'Catastro';
+  if (/\/rediam\/[^?]*REDIAM_Inventario_VVPP/.test(u)) return 'vías pecuarias';
+  if (/\/rediam\/[^?]*REDIAM_Montes/.test(u)) return 'montes públicos';
+  if (/\/rediam\//.test(u)) return 'Junta de Andalucía';
+  if (/waymarkedtrails|\/wmt\//.test(u)) return /\/mtb\//.test(u) ? 'rutas MTB' : 'senderismo GR/PR/SL';
+  if (/terrarium/.test(u)) return 'relieve';
+  return 'otros';
+}
+// Resumen «satélite 126 · relieve 69 · …» de lo que se va a guardar (o de lo guardado)
+function offlineBreakdown(urls) {
+  const cuenta = new Map();
+  for (const u of (urls instanceof Map ? urls.keys() : urls)) {
+    const k = offlineTileKind(u);
+    cuenta.set(k, (cuenta.get(k) || 0) + 1);
+  }
+  return [...cuenta.entries()].sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `${k} ${n.toLocaleString('es-ES')}`).join(' · ');
+}
+// URL de una tesela de una fuente raster definida por plantilla (Catastro, REDIAM…),
+// sustituyendo {bbox-epsg-3857} por el mismo cálculo que hace MapLibre para EPSG:3857.
+function wmsTileUrl(sourceId, z, x, y) {
+  const src = map.getSource(sourceId);
+  const t = src && src.tiles && src.tiles[0];
+  if (!t) return null;
+  const n = 2 ** z, R = 6378137, span = 2 * Math.PI * R / n;
+  const minX = -Math.PI * R + x * span, maxX = minX + span;
+  const maxY = Math.PI * R - y * span, minY = maxY - span;
+  return t.replace('{bbox-epsg-3857}', `${minX},${minY},${maxX},${maxY}`)
+          .replace('{z}', z).replace('{x}', x).replace('{y}', y);
+}
 function offlineUrlsFor(pts) {
   const urls = new Map();   // url -> tamaño medio estimado (KB)
-  const add = (u, kb) => { if (!urls.has(u)) urls.set(u, kb); };
+  const add = (u, kb) => { if (u && !urls.has(u)) urls.set(u, kb); };
   const total = pts[pts.length - 1].d, idxs = [];
   for (let d = 0; d <= total; d += 120) idxs.push(idxAt(d));
   idxs.push(pts.length - 1);
@@ -1226,10 +1296,14 @@ function offlineUrlsFor(pts) {
         }
         if (prefs.ovMtb) add(`${WMT}/mtb/${z}/${x}/${y}.png`, AVG_KB.ov);
         if (prefs.ovHike) add(`${WMT}/hiking/${z}/${x}/${y}.png`, AVG_KB.ov);
+        // Parcelas del Catastro y capas de la Junta: WMS, con los mismos límites de zoom que su fuente
+        if (prefs.ovCat && z >= 13) add(wmsTileUrl('catastro', z, x, y), AVG_KB.ref);
+        if (prefs.ovVvpp && map.getLayer('vvpp') && z >= 9) add(wmsTileUrl('vvpp', z, x, y), AVG_KB.ov);
+        if (prefs.ovMontes && map.getLayer('montes') && z >= 9) add(wmsTileUrl('montes', z, x, y), AVG_KB.ov);
         // Relieve: hasta z14 con margen, z15 solo bajo la ruta
         if (z <= 14) add(`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`, AVG_KB.dem);
-        const vt = prefs.ovNames && map.getSource('ofm') && map.getSource('ofm').tiles && map.getSource('ofm').tiles[0];
-        if (vt && z <= 14) add(vt.replace('{z}', z).replace('{x}', x).replace('{y}', y), 30);
+        // Tiles vectoriales de OpenStreetMap (pistas, sendas y nombres)
+        if (prefs.ovNames && z <= OFM_MAXZOOM) add(OFM_VT.replace('{z}', z).replace('{x}', x).replace('{y}', y), AVG_KB.vt);
       }
       if (z === 15) add(`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/15/${tx}/${ty}.png`, AVG_KB.dem);
     }
@@ -1250,12 +1324,19 @@ function updateOfflineButton() {
   let kb = 0; for (const v of urls.values()) kb += v;
   btn.disabled = false;
   btn.textContent = `Guardar mapa de esta ruta (≈ ${fmtMB(kb)})`;
-  btn.title = `${urls.size.toLocaleString('es-ES')} teselas · mapa ${MAP_NAMES[prefs.basemap]}${prefs.ovLite ? ' + sendas CyclOSM' : ''}${prefs.ovMtb ? ' + rutas MTB' : ''}${prefs.ovHike ? ' + senderismo' : ''} + relieve`;
+  btn.title = `${urls.size.toLocaleString('es-ES')} teselas:\n${offlineBreakdown(urls)}`;
 }
 async function renderOfflineList() {
   const list = $('offlineList'), meta = offlineMeta();
   list.innerHTML = meta.map(m => `<li><span title="${m.name.replace(/"/g, '&quot;')}">${m.name.replace(/</g, '&lt;')}</span>
     <small>${fmtMB(m.kb)} · ${MAP_NAMES[m.map] || ''}</small><button class="btn" type="button" data-del="${m.id}">Borrar</button></li>`).join('');
+  // Detalle de lo que se guardó de verdad en cada zona (por si falta algo)
+  for (const m of meta) {
+    const li = list.querySelector(`[data-del="${m.id}"]`);
+    if (!li) continue;
+    const urls = await idbGet('offline:' + m.id);
+    if (Array.isArray(urls) && urls.length) li.closest('li').title = `${urls.length.toLocaleString('es-ES')} teselas:\n${offlineBreakdown(urls)}`;
+  }
   try {
     const est = await navigator.storage.estimate();
     $('offlineUsage').textContent = meta.length ? `Espacio usado por la app: ${fmtMB((est.usage || 0) / 1024)}` : '';
@@ -1294,10 +1375,10 @@ async function saveOffline() {
   const id = Date.now().toString(36);
   await idbSet('offline:' + id, urls);
   const meta = offlineMeta();
-  meta.unshift({ id, name: S.name || 'Ruta', date: Date.now(), kb: bytes / 1024, n: urls.length, map: prefs.basemap });
+  meta.unshift({ id, name: S.name || 'Ruta', date: Date.now(), kb: bytes / 1024, n: urls.length, map: prefs.basemap, parts: offlineBreakdown(urls) });
   setOfflineMeta(meta);
   setStatus(fail ? `Mapa guardado, pero ${fail} teselas no se pudieron descargar. Vuelve a pulsar para completarlo.`
-                 : `Mapa de «${S.name || 'la ruta'}» guardado: lo verás sin cobertura.`, !!fail);
+                 : `Mapa de «${S.name || 'la ruta'}» guardado: lo verás sin cobertura.\nGuardado: ${offlineBreakdown(urls)}`, !!fail);
   renderOfflineList(); updateOfflineButton();
 }
 async function deleteOffline(id) {
@@ -1570,7 +1651,8 @@ async function idbGet(key) {
 }
 const saveLastTrack = (name, pts) => idbSet('lastTrack', { name, pts, savedAt: Date.now() });
 
-async function loadTrack(name, pts, save = true) {
+async function loadTrack(name, pts, save = true, avisos = '') {
+  stopPrefetch();
   if (save) saveLastTrack(name, pts);
   await mapReady;
   if (D.active) endDraw(false);
@@ -1585,13 +1667,19 @@ async function loadTrack(name, pts, save = true) {
   clearSelection();
   try {
     if (await analyze()) fitRoute();
-  } catch (err) { setStatus(err.message, true); }
+  } catch (err) { setStatus(avisos ? avisos + ' · ' + err.message : err.message, true); return; }
+  // El aviso de la altitud ausente o de los puntos descartados se añade después del análisis,
+  // que es quien escribe el mensaje de estado.
+  if (avisos) setStatus((avisos + ' · ' + $('status').textContent).trim());
 }
 async function openFile(file) {
   if (!file) return;
   try {
-    const { name, pts } = parseGPX(await file.text());
-    await loadTrack(name || file.name.replace(/\.gpx$/i, ''), pts);
+    const { name, pts, descartados } = parseGPX(await file.text());
+    const avisos = [];
+    if (descartados) avisos.push(`${descartados} punto${descartados > 1 ? 's' : ''} con coordenadas imposibles descartado${descartados > 1 ? 's' : ''}`);
+    if (!pts.some(p => isFinite(p.ele))) avisos.push('el archivo no trae altitudes: se usará el modelo de terreno si hay conexión');
+    await loadTrack(name || file.name.replace(/\.gpx$/i, ''), pts, true, avisos.join(' · '));
   } catch (err) { setStatus(err.message, true); }
 }
 function syncMode() {
@@ -1750,6 +1838,7 @@ async function refreshDraw() {
 }
 
 function startDraw() {
+  stopPrefetch();
   D.active = true; D.wps = []; D.legs = []; D.legReq = []; D.fixed = []; D.warn = '';
   document.body.classList.add('drawing');
   $('viewTools').hidden = true; $('drawTools').hidden = false;
@@ -2027,61 +2116,101 @@ for (const key in WMSOV) {
 }
 mapReady.then(applyWmsOverlays);
 
-// Consulta de las capas de la Junta en un punto (GetFeatureInfo): devuelve texto breve o ''
+// Consulta de las capas de la Junta en un punto (GetFeatureInfo).
+// Devuelve {estado:'ok'|'vacio'|'servicio', html}: «sin resultados», «servicio no disponible»
+// y «consulta fallida» son tres cosas distintas y no deben acabar en el mismo mensaje.
+const WMS_SIN_RESULTADOS = /no (results|features)|search returned no results|not queryable|no hay datos/i;
 async function queryWms(key, ll) {
   const o = WMSOV[key];
-  if (!prefs[key] || !o.layers) return '';
+  if (!prefs[key] || !o.layers) return { estado: 'vacio', html: '' };
   const ql = (o.queryable && o.queryable.length ? o.queryable : o.layers).join(',');
   const R = 6378137, x = ll.lng * Math.PI / 180 * R, y = Math.log(Math.tan(Math.PI / 4 + ll.lat * Math.PI / 360)) * R;
   const h = 25;   // ±25 m alrededor del punto tocado
   const url = `${RED}/${o.service}?SERVICE=WMS&REQUEST=GetFeatureInfo&VERSION=1.1.1&LAYERS=${encodeURIComponent(ql)}&QUERY_LAYERS=${encodeURIComponent(ql)}` +
     `&STYLES=&SRS=${o.srs}&BBOX=${x - h},${y - h},${x + h},${y + h}&WIDTH=51&HEIGHT=51&X=25&Y=25&INFO_FORMAT=text/plain&FEATURE_COUNT=3`;
   try {
-    const t = await (await fetch(url)).text();
-    if (!t || /no (results|features)|search returned no results|not queryable/i.test(t) || !/=/.test(t)) return '';
+    const r = await fetch(url);
+    if (!r.ok) return { estado: 'servicio', html: `<p class="ldt">● ${o.label}: el servicio no responde ahora (HTTP ${r.status}). Vuelve a intentarlo.</p>` };
+    const t = await r.text();
+    // WMS puede contestar con una excepción XML y estado 200: eso no es «sin resultados»
+    if (/<ServiceException|ExceptionReport|<HTML|<!DOCTYPE html/i.test(t)) {
+      const m = /<ServiceException[^>]*>([\s\S]*?)<\/ServiceException>/i.exec(t);
+      const det = m ? m[1].replace(/\s+/g, ' ').trim().slice(0, 120) : 'respuesta inesperada del servicio';
+      return { estado: 'servicio', html: `<p class="ldt">● ${o.label}: el servicio devolvió un error (${det.replace(/</g, '&lt;')}).</p>` };
+    }
+    if (!t || WMS_SIN_RESULTADOS.test(t) || !/=/.test(t)) return { estado: 'vacio', html: '' };
     // texto plano de MapServer: líneas «campo = 'valor'»; se muestran las más útiles
     const lines = t.split(/\r?\n/).map(l => l.trim()).filter(l => /=/.test(l))
       .map(l => l.replace(/^\s*([^=]+?)\s*=\s*'?(.*?)'?\s*$/, (m, k, v) => `${k}: ${v}`))
       .filter(l => !/^(OBJECTID|FID|SHAPE|ID_|COD_|GEOM)/i.test(l) && !/: ?$/.test(l)).slice(0, 5);
-    return lines.length ? `<p class="ok">● ${o.label}</p><p class="ldt">${lines.map(l => l.replace(/</g, '&lt;')).join('<br>')}</p>` : '';
-  } catch (e) { return ''; }
+    return lines.length
+      ? { estado: 'ok', html: `<p class="ok">● ${o.label}</p><p class="ldt">${lines.map(l => l.replace(/</g, '&lt;')).join('<br>')}</p>` }
+      : { estado: 'vacio', html: '' };
+  } catch (e) {
+    return { estado: 'servicio', html: `<p class="ldt">● ${o.label}: no se pudo consultar (${String(e && e.message || e).replace(/</g, '&lt;')}).</p>` };
+  }
 }
 
 /* ---------- Consulta de parcela del Catastro ---------- */
 // En rústico la referencia es: provincia(2) municipio(3) sección(1 letra) polígono(3) parcela(5).
 // Las parcelas 9000+ son de dominio público: caminos, arroyos, carreteras, vías pecuarias…
+// Devuelve {estado:'ok'|'vacio'|'servicio', html} igual que queryWms.
+const AVISO_CARTOGRAFICO = 'Información cartográfica orientativa de las fuentes originales: no acredita titularidad, deslinde ni derechos de paso.';
 let catPopup = null;
 async function queryPoint(ll) {
   if (catPopup) catPopup.remove();
   catPopup = new maplibregl.Popup({ closeButton: true, maxWidth: '280px', className: 'cat-pop' }).setLngLat(ll).setHTML('<p>Consultando…</p>').addTo(map);
   const popup = catPopup;
-  const parts = await Promise.all([prefs.ovCat ? catastroHtml(ll) : '', queryWms('ovVvpp', ll), queryWms('ovMontes', ll)]);
-  const html = parts.filter(Boolean).join('<hr>');
-  if (popup === catPopup) popup.setHTML(html || '<p>Nada que mostrar en este punto.</p>');
+  const parts = await Promise.all([prefs.ovCat ? catastroHtml(ll) : { estado: 'vacio', html: '' }, queryWms('ovVvpp', ll), queryWms('ovMontes', ll)]);
+  const html = parts.filter(p => p && p.html).map(p => p.html).join('<hr>');
+  const fallos = parts.filter(p => p && p.estado === 'servicio').length;
+  const pie = `<p class="ldt">${AVISO_CARTOGRAFICO}</p>`;
+  const aviso = fallos ? `<p class="warn">No se pudo consultar ${fallos === 1 ? 'una de las fuentes' : 'algunas fuentes'}: lo que falta no significa que no haya nada en este punto.</p>` : '';
+  const resultado = {
+    estado: fallos ? 'servicio' : (html ? 'ok' : 'vacio'),
+    html: (html || '<p>Sin datos de Catastro, vías pecuarias ni montes públicos en este punto.</p>') + aviso + pie
+  };
+  if (popup === catPopup) popup.setHTML(resultado.html);
+  return resultado;
 }
+// La consulta del Catastro devuelve un código de error propio: «para esas coordenadas no hay
+// referencia» es «sin datos» (cuerr=1), mientras que un error de servicio (cuerr>=2) no es lo mismo
+// y no se puede presentar como «aquí no hay nada».
 async function catastroHtml(ll) {
   const url = `${CAT}/ovcservweb/OVCSWLocalizacionRC/OVCCoordenadas.asmx/Consulta_RCCOOR?SRS=EPSG:4326&Coordenada_X=${ll.lng.toFixed(6)}&Coordenada_Y=${ll.lat.toFixed(6)}`;
   try {
     const r = await fetch(url);
-    const doc = new DOMParser().parseFromString(await r.text(), 'text/xml');
+    const texto = await r.text();
+    if (!r.ok) return { estado: 'servicio', html: `<p class="ldt">● Catastro: el servicio no responde ahora (HTTP ${r.status}). Vuelve a intentarlo.</p>` };
+    const doc = new DOMParser().parseFromString(texto, 'text/xml');
+    if (doc.getElementsByTagName('parsererror').length) return { estado: 'servicio', html: '<p class="ldt">● Catastro: la respuesta no se pudo leer (formato inesperado).</p>' };
     const t = tag => { const n = doc.getElementsByTagName(tag)[0]; return n ? n.textContent.trim() : ''; };
-    const rc = t('pc1') + t('pc2'), ldt = t('ldt'), err = t('des');
-    if (!rc) return `<p>${err || 'No hay parcela catastral en este punto.'}</p>`;
+    const rc = (t('pc1') + t('pc2')).replace(/\s/g, ''), ldt = t('ldt'), des = t('des'), cod = parseInt(t('cod'), 10);
+    if (!rc) {
+      const detalle = des ? ` (${des.replace(/</g, '&lt;')})` : '';
+      return Number.isFinite(cod) && cod !== 16
+        ? { estado: 'servicio', html: `<p class="ldt">● Catastro: el servicio devolvió un error${detalle}.</p>` }
+        : { estado: 'vacio', html: `<p>Sin referencia catastral en este punto${detalle}.</p>` };
+    }
     let html = `<p class="ref">Ref. catastral <b>${rc}</b></p>`;
     if (/^[0-9]{5}[A-Z]/.test(rc)) {
-      const pol = parseInt(rc.slice(6, 9), 10), parc = parseInt(rc.slice(9, 14), 10);
-      html += `<p>Polígono <b>${pol}</b> · Parcela <b>${parc}</b></p>`;
-      html += parc >= 9000
-        ? '<p class="ok">● Dominio público: camino, arroyo, carretera o vía pecuaria.</p>'
+      // Rústico: provincia(2) municipio(3) sector(1 letra) polígono(3) parcela(5), y en las
+      // referencias de 20 caracteres hay 4 de control al final. La parcela son los 5 dígitos
+      // anteriores a ese sufijo, no una posición fija desde el principio.
+      const cuerpo = rc.replace(/[A-Z]{2}$/, '');
+      const parc = parseInt(cuerpo.slice(-5), 10), pol = parseInt(rc.slice(6, 9), 10);
+      html += `<p>Polígono <b>${Number.isFinite(pol) ? pol : rc.slice(6, 9)}</b> · Parcela <b>${Number.isFinite(parc) ? parc : cuerpo.slice(-5)}</b></p>`;
+      html += Number.isFinite(parc) && parc >= 9000
+        ? '<p class="ok">● La numeración 9000+ es un indicio cartográfico de dominio público (camino, arroyo, carretera o vía pecuaria); no es una determinación jurídica.</p>'
         : '<p class="warn">● Parcela particular o patrimonial. Si hay un camino aquí, puede ser privado: compruébalo.</p>';
     } else {
       html += '<p>Suelo urbano.</p>';
     }
     if (ldt) html += `<p class="ldt">${ldt.replace(/</g, '&lt;')}</p>`;
-    html += `<p><a href="https://www1.sedecatastro.gob.es/CYCBienInmueble/OVCConCiud.aspx?UrbRus=&RefC=${encodeURIComponent(rc.slice(0, 14))}" target="_blank" rel="noopener">Ver en la Sede del Catastro</a></p>`;
-    return html;
+    html += `<p><a href="https://www1.sedecatastro.gob.es/CYCBienInmueble/OVCConCiud.aspx?UrbRus=&RefC=${encodeURIComponent(rc)}" target="_blank" rel="noopener">Ver en la Sede del Catastro</a></p>`;
+    return { estado: 'ok', html };
   } catch (e) {
-    return '<p>No se pudo consultar el Catastro. Revisa la conexión.</p>';
+    return { estado: 'servicio', html: `<p class="ldt">● Catastro: no se pudo consultar (${String(e && e.message || e).replace(/</g, '&lt;')}). Revisa la conexión.</p>` };
   }
 }
 map.on('click', e => {

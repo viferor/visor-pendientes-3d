@@ -21,10 +21,23 @@ manifest.webmanifest   datos de instalación de la PWA
 sw.js                  service worker (caché de la app y de las teselas)
 lib/                   MapLibre GL JS 4.7.1
 icons/                 iconos de la app
-vercel.json            cabeceras para el despliegue en Vercel
+tests/                 pruebas del cálculo, del GPX, de las capas y del modo sin cobertura
+vercel.json            cabeceras y rewrites para el despliegue en Vercel
 ```
 
 No necesita compilación: es un sitio estático.
+
+## Pruebas
+
+```bash
+npm test
+```
+
+Ejecutan `index.html` y `sw.js` reales en un entorno simulado (sin navegador y sin dependencias):
+parseo de GPX (altitudes, segmentos, coordenadas imposibles, sensores), distancias y pendientes con
+casos conocidos, altitud del modelo de terreno, estado al cambiar de ruta, capas y consultas del
+Catastro y de la Junta, cachés del service worker y composición del mapa guardado sin cobertura.
+El workflow de GitHub Actions las ejecuta antes de comprobar la compilación de Android.
 
 ## Desarrollo local
 
