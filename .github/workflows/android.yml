@@ -8,8 +8,23 @@ on:
     branches: [main]
     paths:
       - 'index.html'
+      - 'sw.js'
+      - 'vercel.json'
+      - 'tests/**'
       - 'lib/**'
       - 'icons/**'
+      - 'android/**'
+      - 'capacitor.config.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/**'
+      - '.github/workflows/android.yml'
+  pull_request:
+    paths:
+      - 'index.html'
+      - 'sw.js'
+      - 'vercel.json'
+      - 'tests/**'
       - 'android/**'
       - 'capacitor.config.json'
       - 'package.json'
@@ -26,8 +41,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # Pruebas del cálculo, del GPX, de las capas, del service worker y del modo sin cobertura.
+      # No necesitan dependencias: el arnés ejecuta index.html y sw.js en un entorno simulado.
+      - name: Ejecutar las pruebas
+        run: npm test
+
   build:
     runs-on: ubuntu-latest
+    needs: pruebas
     steps:
       - uses: actions/checkout@v5
 
