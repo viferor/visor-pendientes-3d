@@ -616,9 +616,13 @@ function parseGPX(text) {
     if (n && n.textContent.trim()) { name = n.textContent.trim(); break; }
   }
   const pts = [];
+  let descartados = 0;
   for (const p of nodes) {
     const lat = parseFloat(p.getAttribute('lat')), lon = parseFloat(p.getAttribute('lon'));
     if (!isFinite(lat) || !isFinite(lon)) continue;
+    // Coordenadas imposibles: no se pueden corregir sin inventar datos, así que se descartan
+    // (y se informa de cuántas veces ocurre, para no «arreglar» el archivo en silencio).
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) { descartados++; continue; }
     const e = [...p.children].find(c => c.localName === 'ele');
     const ele = e ? parseFloat(e.textContent) : NaN;
     const prev = pts[pts.length - 1];
@@ -638,7 +642,7 @@ function parseGPX(text) {
     pts.push({ lat, lon, ele, t, ...sens });
   }
   if (pts.length < 2) throw new Error('El GPX tiene menos de dos puntos útiles.');
-  return { name, pts };
+  return { name, pts, descartados };
 }
 
 /* ---------- GPX: escritura ---------- */
@@ -795,9 +799,18 @@ async function analyze() {
   if (!S.pts || S.pts.length !== pts.length) S.sel = null;
   S.pts = pts;
   S.segs = buildSegments(pts, S.L);
+  // Aviso si el archivo traía varios segmentos separados: se han unido y el tramo que cruza
+  // el salto no es un camino real, así que conviene decirlo en vez de dibujarlo como si lo fuera.
+  let saltos = 0, mayorSalto = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const dd = pts[i].d - pts[i - 1].d, dt = (isFinite(pts[i].t) && isFinite(pts[i - 1].t)) ? Math.abs(pts[i].t - pts[i - 1].t) : 0;
+    if (dd > 2000 || (dd > 150 && dt > 4 * 3600 * 1000)) { saltos++; mayorSalto = Math.max(mayorSalto, dd); }
+  }
+  S.saltos = { n: saltos + 1, mayor: mayorSalto };
   render();
   setStatus(`Altitud ${S.mode === 'terrain' ? 'del modelo de terreno' : 'del GPX'} · tramos de ${S.L} m` +
-    (S.mode === 'terrain' && S.L < 25 ? ' · el relieve no tiene detalle para tramos tan cortos; usa la altitud del GPX' : ''));
+    (S.mode === 'terrain' && S.L < 25 ? ' · el relieve no tiene detalle para tramos tan cortos; usa la altitud del GPX' : '') +
+    (saltos ? ` · el archivo trae ${saltos + 1} segmentos separados (hueco mayor de ${fmtInt(mayorSalto)} m): el tramo que los cruza no es un camino real` : ''));
   return true;
 }
 
@@ -1625,7 +1638,7 @@ async function idbGet(key) {
 }
 const saveLastTrack = (name, pts) => idbSet('lastTrack', { name, pts, savedAt: Date.now() });
 
-async function loadTrack(name, pts, save = true) {
+async function loadTrack(name, pts, save = true, avisos = '') {
   if (save) saveLastTrack(name, pts);
   await mapReady;
   if (D.active) endDraw(false);
@@ -1640,13 +1653,19 @@ async function loadTrack(name, pts, save = true) {
   clearSelection();
   try {
     if (await analyze()) fitRoute();
-  } catch (err) { setStatus(err.message, true); }
+  } catch (err) { setStatus(avisos ? avisos + ' · ' + err.message : err.message, true); return; }
+  // El aviso de la altitud ausente o de los puntos descartados se añade después del análisis,
+  // que es quien escribe el mensaje de estado.
+  if (avisos) setStatus((avisos + ' · ' + $('status').textContent).trim());
 }
 async function openFile(file) {
   if (!file) return;
   try {
-    const { name, pts } = parseGPX(await file.text());
-    await loadTrack(name || file.name.replace(/\.gpx$/i, ''), pts);
+    const { name, pts, descartados } = parseGPX(await file.text());
+    const avisos = [];
+    if (descartados) avisos.push(`${descartados} punto${descartados > 1 ? 's' : ''} con coordenadas imposibles descartado${descartados > 1 ? 's' : ''}`);
+    if (!pts.some(p => isFinite(p.ele))) avisos.push('el archivo no trae altitudes: se usará el modelo de terreno si hay conexión');
+    await loadTrack(name || file.name.replace(/\.gpx$/i, ''), pts, true, avisos.join(' · '));
   } catch (err) { setStatus(err.message, true); }
 }
 function syncMode() {
