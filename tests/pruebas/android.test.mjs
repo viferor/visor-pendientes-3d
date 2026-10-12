@@ -347,6 +347,90 @@ await test('S-velocidad', 'El reproductor llega a 90x y 120x', () => {
   return { detail: 'extremos del deslizador: 90x y 120x; botones 60x/90x/120x fijan la velocidad y se marcan' };
 });
 
+// Referencias catastrales con el formato REAL que devuelve el servicio (comprobado contra
+// ovc.catastro.meh.es): 14 caracteres, provincia(2)+municipio(3)+sector(1)+polígono(3)+parcela(5),
+// sin letras. Ejemplo real: pc1='18072A0' + pc2='0100140' → '18072A00100140', parcela 00140.
+// Las de 20 caracteres acaban en cuatro dígitos de control, y ahí la parcela son los 5 dígitos
+// anteriores a esos cuatro (por eso el código quita antes el sufijo de dos letras).
+const refCat = (poligono, parcela) =>
+  '18072A' + String(poligono).padStart(3, '0') + String(parcela).padStart(5, '0');
+
+await test('T-catastro', 'La línea paralela marca público en verde y particular en rojo', async () => {
+  const web = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
+  // La fuente de la línea no puede llamarse 'catastro': ese nombre ya es la capa raster de parcelas,
+  // y reutilizarlo rompía las parcelas y su guardado sin cobertura.
+  assert(/addSource\('catastroRuta'/.test(web), 'la línea debería usar la fuente «catastroRuta»');
+  assert(!/addSource\('catastro', \{ type: 'geojson'/.test(web), 'no se puede reutilizar el nombre «catastro» (es la capa raster de parcelas)');
+  assert(/CAT_COLORES = \{ publico: '#2ecc71', particular: '#e74c3c' \}/.test(web), 'faltan los colores verde (público) y rojo (particular)');
+  assert(/id="ovCatRuta"/.test(web), 'falta el interruptor de la línea del Catastro en Ajustes');
+  // Interpretación de la referencia: 9000+ es dominio público
+  const app2 = loadApp();
+  const a2 = app2.api();
+  // Referencias con el formato real de 14 caracteres (ver refCat arriba) y una de 20 con control
+  eq(refCat(1, 140), '18072A00100140', 'formato de referencia de 14 caracteres');
+  eq(refCat(1, 8999).length, 14, 'la referencia de prueba debería tener 14 caracteres: ' + refCat(1, 8999));
+  eq(a2.interpretarReferencia(refCat(1, 8999)).tipo, 'particular', 'parcela 8999 → particular (justo por debajo del límite)');
+  eq(a2.interpretarReferencia(refCat(1, 9000)).tipo, 'publico', 'parcela 9000 → dominio público');
+  eq(a2.interpretarReferencia(refCat(1, 9001)).tipo, 'publico', 'parcela 9001 → dominio público');
+  eq(a2.interpretarReferencia(refCat(1, 140)).tipo, 'particular', 'parcela 140 → particular (la referencia real de ejemplo)');
+  eq(a2.interpretarReferencia('18072A001001400000FP').tipo, 'particular', 'referencia de 20 caracteres con control y letras');
+  const info = a2.interpretarReferencia(refCat(12, 9000));
+  eq(info.parcela, 9000, 'debería extraer la parcela 9000');
+  eq(info.poligono, 12, 'debería extraer el polígono 12');
+  eq(a2.interpretarReferencia('1234567VK1233N0001WX').tipo, 'urbano', 'suelo urbano');
+  // Muestreo a lo largo de la ruta
+  await a2.loadTrack('Catastro', rutaSintetica(400), false);
+  const muestras = a2.muestrasCatastro(a2.S.pts);
+  const total = a2.S.pts[a2.S.pts.length - 1].d;
+  assert(muestras.length >= 2 && muestras.length <= 600, 'número de muestras fuera de rango: ' + muestras.length);
+  near(muestras[0].lon, a2.S.pts[0].lon, 1e-6, 'la primera muestra es el inicio');
+  near(muestras[muestras.length - 1].lat, a2.S.pts[a2.S.pts.length - 1].lat, 1e-3, 'la última muestra es el final');
+  // La línea paralela va desplazada, no encima
+  const desplazada = a2.desplazarLinea([[0, 0], [0.001, 0], [0.002, 0]], 10);
+  eq(desplazada.length, 3, 'debería devolver el mismo número de puntos');
+  assert(desplazada[0][1] < 0 && desplazada[1][1] < 0, 'la línea debería desplazarse a un lado del trazado: ' + JSON.stringify(desplazada));
+  assert(Math.abs(desplazada[1][1]) < 0.0002, 'el desplazamiento debería ser de unos metros, no de kilómetros: ' + desplazada[1][1]);
+  return { detail: `${muestras.length} muestras en ${(total / 1000).toFixed(1)} km; referencia de parcela 9000+ → público, por debajo → particular; desplazamiento lateral de ~10 m` };
+});
+
+await test('T-catastro-2', 'La línea del Catastro se pinta según las respuestas del servicio', async () => {
+  const app2 = loadApp();
+  const a2 = app2.api();
+  await a2.loadTrack('Catastro', rutaSintetica(40), false);
+  // El servicio devuelve una parcela de dominio público, otra particular y un punto sin referencia,
+  // según la longitud del punto consultado (para que el resultado sea determinista)
+  const xml = ref => `<?xml version="1.0"?><consulta><pc1>${ref.slice(0, 7)}</pc1><pc2>${ref.slice(7)}</pc2><ldt>PRUEBA</ldt><cod>16</cod></consulta>`;
+  let n = 0;
+  app2.setFetch(async u => {
+    const s = String(u);
+    if (s.includes('Consulta_RCCOOR')) {
+      n++;
+      // Parcela 9500 (dominio público) en un tercio de los puntos, 1234 (particular) en otro, y sin
+      // referencia en el resto: así la línea debe salir en los dos colores
+      const ref = n % 3 === 0 ? refCat(1, 9500) : (n % 3 === 1 ? refCat(1, 1234) : '');
+      return { ok: true, status: 200, url: s, text: async () => xml(ref), clone() { return this; }, blob: async () => ({ size: 1 }), json: async () => ({}), type: 'basic' };
+    }
+    return { ok: true, status: 200, url: s, text: async () => '', clone() { return this; }, blob: async () => ({ size: 1 }), json: async () => ({}), type: 'basic' };
+  });
+  a2.CATR.cache.clear();
+  // Si el análisis del track ya había lanzado la consulta, esta llamada se apunta para repetirla al
+  // terminar en vez de solaparse: se espera un poco para darle tiempo a acabar y a pintar.
+  await a2.catastroLinea();
+  await new Promise(r => setTimeout(r, 600));
+  await a2.catastroLinea();
+  const datos = app2.mapStub.getSource('catastroRuta') && app2.mapStub._setData.filter(([id]) => id === 'catastroRuta').pop();
+  assert(datos, 'debería haberse actualizado la fuente de la línea del Catastro');
+  const features = (datos[1] && datos[1].features) || [];
+  assert(features.length >= 1, 'debería haber al menos un tramo pintado: ' + features.length);
+  const colores = new Set(features.map(f => f.properties.color));
+  assert(colores.has(a2.CAT_COLORES.publico), 'debería haber tramos verdes (dominio público): ' + [...colores].join(', '));
+  assert(colores.has(a2.CAT_COLORES.particular), 'debería haber tramos rojos (particulares): ' + [...colores].join(', '));
+  assert(n > 0, 'debería haber consultado el servicio del Catastro');
+  const resumen = a2.CATR.ultimo;
+  assert(resumen && resumen.publico > 0 && resumen.particular > 0, 'el resumen debería contar ambos tipos: ' + JSON.stringify(resumen));
+  return { detail: `${n} consultas al servicio; ${features.length} tramos pintados (${resumen.publico} muestras públicas, ${resumen.particular} particulares, ${resumen.sin} sin referencia)` };
+});
+
 await test('Q5', 'Si hay versión nueva se avisa y se ofrece recargar (sin recargar sola)', async () => {
   const app2 = loadApp();
   const a2 = app2.api();

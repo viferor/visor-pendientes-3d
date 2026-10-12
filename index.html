@@ -343,6 +343,7 @@ body.layout .movable *{pointer-events:none}
           <label class="check"><input type="checkbox" id="ovMtb"> Rutas MTB señalizadas</label>
           <label class="check"><input type="checkbox" id="ovHike"> Rutas de senderismo (GR, PR, SL)</label>
           <label class="check"><input type="checkbox" id="ovCat"> Parcelas del Catastro</label>
+          <label class="check"><input type="checkbox" id="ovCatRuta"> Marcar en la ruta el tipo de parcela (verde: pública · rojo: particular)</label>
           <label class="check"><input type="checkbox" id="ovVvpp"> Vías pecuarias (Andalucía)</label>
           <label class="check"><input type="checkbox" id="ovMontes"> Montes públicos (Andalucía)</label>
         </div>
@@ -480,7 +481,7 @@ const WMT = /\.vercel\.app$/.test(location.hostname) ? location.origin + '/wmt' 
 const CAT = /\.vercel\.app$/.test(location.hostname) ? location.origin + '/catastro' : 'https://ovc.catastro.meh.es';
 // Servicios WMS de la REDIAM (Junta de Andalucía), también a través de Vercel
 const RED = /\.vercel\.app$/.test(location.hostname) ? location.origin + '/rediam' : 'https://www.juntadeandalucia.es/medioambiente/mapwms';
-const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true, arrowStep: 'auto', playAlpha: 86, ovMtb: false, ovHike: false, ovLite: false, cyclosmAlpha: 100, ovNames: true, ovCat: false, catAlpha: 80, ovVvpp: false, ovMontes: false },
+const prefs = Object.assign({ exag: 1.5, labels: true, profile: true, alpha: 86, route: 'bike', seglen: 'auto', basemap: 'sat', follow: true, arrows: true, arrowStep: 'auto', playAlpha: 86, ovMtb: false, ovHike: false, ovLite: false, cyclosmAlpha: 100, ovNames: true, ovCat: false, catAlpha: 80, ovVvpp: false, ovMontes: false, ovCatRuta: true },
   (() => { try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch (e) { return {}; } })());
 function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {} }
 
@@ -681,6 +682,16 @@ const mapReady = new Promise(res => map.on('load', () => {
     } });
   map.addLayer({ id: 'hover-pt', type: 'circle', source: 'hover',
     paint: { 'circle-radius': 7, 'circle-color': '#fff', 'circle-stroke-width': 3, 'circle-stroke-color': '#111' } });
+  // Línea paralela con el Catastro: verde si la ruta va por dominio público (parcela 9000+), roja si
+  // va por parcela particular. Se dibuja desplazada unos metros a la derecha del trazado.
+  // OJO: la fuente se llama 'catastroRuta' y no 'catastro', que ya es la capa raster de parcelas.
+  map.addSource('catastroRuta', { type: 'geojson', data: empty });
+  map.addLayer({ id: 'catastroLinea', type: 'line', source: 'catastroRuta',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': ['get', 'color'], 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 3, 14, 5, 17, 8], 'line-opacity': 0.9 } });
+  map.addLayer({ id: 'catastroCasing', type: 'line', source: 'catastroRuta',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': '#000', 'line-opacity': 0.35, 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 5, 14, 7, 17, 10] } }, 'catastroLinea');
   // Si MapLibre falla al mover la cámara (o cualquier otra cosa), que se vea en el estado en vez de
   // quedarse en silencio: es lo que impedía saber por qué no se encuadraba en el móvil.
   map.on('error', e => {
@@ -709,7 +720,34 @@ const S = { raw: null, name: '', mode: 'gpx', hasEle: false, terrainEle: null, p
 // Número de la carga de ruta en curso: sirve para que una carga antigua (el track de ejemplo del
 // arranque) no pise a una más nueva (un .gpx abierto a mano o enviado desde otra aplicación).
 const CargaActual = { n: 0 };
-function setStatus(msg, err) { $('status').textContent = msg || ''; $('status').classList.toggle('err', !!err); }
+function setStatus(msg, err) {
+  // Prioridad de los mensajes: los avisos importantes y el progreso de tareas de fondo mandan sobre
+  // el estado normal (que analyze/render reescriben continuamente al terminar sus tareas).
+  if (statusManda || progresoStatus.activo) return;
+  $('status').textContent = msg || '';
+  $('status').classList.toggle('err', !!err);
+}
+// Mensajes de progreso de tareas de fondo (consultas al Catastro a lo largo de la ruta, por ejemplo).
+// Nunca tapan un aviso importante, y desaparecen solos pasados unos segundos.
+const progresoStatus = { activo: false, timer: null };
+let statusManda = false;   // hay un aviso importante en pantalla
+function setStatusProgreso(msg, ms = 9000) {
+  if (!msg || statusManda) return;
+  progresoStatus.activo = true;
+  $('status').textContent = msg;
+  $('status').classList.remove('err');
+  clearTimeout(progresoStatus.timer);
+  progresoStatus.timer = setTimeout(() => {
+    progresoStatus.activo = false;
+    if (StatusNota.texto) setStatusNota(StatusNota.texto, StatusNota.error);
+    else setStatus('');
+  }, ms);
+}
+// El progreso nunca puede tapar un aviso: los avisos importantes mandan.
+function quitarStatusProgreso() {
+  clearTimeout(progresoStatus.timer);
+  progresoStatus.activo = false;
+}
 // Avisos que no deben perderse: analyze()/render() escriben el estado al terminar sus tareas de
 // fondo (descarga de relieve, análisis de la ruta), y sin esto podían borrar un aviso importante
 // —por ejemplo el de un archivo recibido que no se ha podido abrir— antes de que el usuario lo lea.
@@ -717,10 +755,18 @@ const StatusNota = { texto: '', error: false };
 function setStatusNota(msg, err) {
   StatusNota.texto = msg || '';
   StatusNota.error = !!err;
-  if (!msg) setStatus('');
+  if (msg) {
+    quitarStatusProgreso();          // el aviso manda sobre lo que estuviera en progreso
+    statusManda = true;
+    $('status').textContent = msg;
+    $('status').classList.toggle('err', !!err);
+  } else {
+    statusManda = false;
+    if (!progresoStatus.activo) setStatus('');
+  }
 }
 function aplicarStatusNota() {
-  if (StatusNota.texto) setStatus(StatusNota.texto, StatusNota.error);
+  if (StatusNota.texto) setStatusNota(StatusNota.texto, StatusNota.error);
 }
 
 /* ---------- GPX: lectura ---------- */
@@ -943,6 +989,9 @@ async function analyze() {
     (S.mode === 'terrain' && S.L < 25 ? ' · el relieve no tiene detalle para tramos tan cortos; usa la altitud del GPX' : '') +
     (saltos ? ` · el archivo trae ${saltos + 1} segmentos separados (hueco mayor de ${fmtInt(mayorSalto)} m): el tramo que los cruza no es un camino real` : ''));
   aplicarStatusNota();   // si había un aviso pendiente (archivo recibido, etc.), no se pierde
+  // Línea paralela con el Catastro (verde: dominio público · rojo: parcela particular). Va en segundo
+  // plano: son consultas a un servicio externo y no deben retrasar el dibujo de la ruta.
+  catastroLinea().catch(() => {});
   return true;
 }
 
@@ -1999,6 +2048,7 @@ function cargarGpxNativo() {
         await loadGpxText(texto, 'Recorrido recibido');
         setStatusNota('');   // cargado sin problemas: el aviso pendiente ya no hace falta
       } catch (err) {
+        quitarStatusProgreso();   // si el análisis dejó un mensaje de progreso, el aviso manda sobre él
         setStatusNota('No se pudo abrir el archivo recibido: ' + err.message, true);
       }
       return;
@@ -2368,6 +2418,7 @@ function applyBasemap() {
   $('cyclosmAlpha').value = prefs.cyclosmAlpha;
   if (map.getLayer('catastro')) map.setPaintProperty('catastro', 'raster-opacity', prefs.catAlpha / 100);
   $('ovCat').checked = prefs.ovCat; $('catAlpha').value = prefs.catAlpha;
+  $('ovCatRuta').checked = prefs.ovCatRuta;
   $('catAlpha').hidden = $('catAlphaLbl').hidden = !prefs.ovCat;
   $('cyclosmAlpha').hidden = $('cyclosmAlphaLbl').hidden = bm !== 'cyclosm';
   $('ovLite').closest('label').hidden = bm === 'cyclosm';
@@ -2384,6 +2435,11 @@ $('ovCat').addEventListener('change', e => {
   if (prefs.ovCat) setStatus(map.getZoom() < 14 ? 'Acércate más para ver las parcelas. Toca el mapa para consultar una parcela.' : 'Toca el mapa para consultar una parcela.');
 });
 $('catAlpha').addEventListener('input', e => { prefs.catAlpha = +e.target.value; savePrefs(); applyBasemap(); });
+$('ovCatRuta').addEventListener('change', e => {
+  prefs.ovCatRuta = e.target.checked; savePrefs();
+  if (prefs.ovCatRuta) { setStatusProgreso('Consultando el Catastro a lo largo de la ruta…', 15000); catastroLinea(); }
+  else { limpiarCatastro(); setStatusProgreso('Se deja de marcar el tipo de parcela en la ruta.'); }
+});
 
 /* ---------- Capas oficiales de la Junta (REDIAM): se leen sus capas del propio servicio ---------- */
 const WMSOV = {
@@ -2501,6 +2557,137 @@ async function queryPoint(ll) {
 // La consulta del Catastro devuelve un código de error propio: «para esas coordenadas no hay
 // referencia» es «sin datos» (cuerr=1), mientras que un error de servicio (cuerr>=2) no es lo mismo
 // y no se puede presentar como «aquí no hay nada».
+// Interpreta una referencia catastral: rústico (provincia, municipio, sector, polígono y parcela) o
+// urbano. La parcela son los 5 dígitos anteriores al sufijo de control, y a partir de 9000 se trata
+// como dominio público (camino, arroyo, carretera o vía pecuaria): es un indicio cartográfico, no
+// una determinación jurídica. Se usa en la ficha y en la línea del Catastro sobre la ruta.
+function interpretarReferencia(rc) {
+  if (!rc) return { tipo: 'ninguna' };
+  if (!/^[0-9]{5}[A-Z]/.test(rc)) return { tipo: 'urbano', ref: rc };
+  const cuerpo = rc.replace(/[A-Z]{2}$/, '');
+  const parcela = parseInt(cuerpo.slice(-5), 10);
+  const poligono = parseInt(rc.slice(6, 9), 10);
+  if (!Number.isFinite(parcela)) return { tipo: 'urbano', ref: rc };
+  return { tipo: parcela >= 9000 ? 'publico' : 'particular', ref: rc, parcela, poligono };
+}
+/* ---------- Línea del Catastro sobre la ruta (verde: público · rojo: particular) ---------- */
+// El servicio de coordenadas del Catastro devuelve UNA referencia por punto, así que la ruta se
+// muestrea cada pocos metros y se consulta cada muestra. Con las respuestas se pinta una línea
+// paralela al trazado, desplazada unos metros a la derecha: verde donde la parcela es de dominio
+// público (9000+) y roja donde es particular. Los tramos sin referencia no se pintan.
+const CATR = { cache: new Map(), pidiendo: false, generacion: 0, avisado: false, ultimo: null };
+const CAT_COLORES = { publico: '#2ecc71', particular: '#e74c3c' };
+function claveCatastro(lon, lat) { return lon.toFixed(4) + ',' + lat.toFixed(4); }   // ~11 m
+
+function limpiarCatastro() {
+  CATR.generacion++;
+  if (map.getSource('catastroRuta')) map.getSource('catastroRuta').setData(empty);
+}
+// Clasificación de un punto, con caché para no repetir consultas del mismo sitio
+async function clasificarPunto(lon, lat) {
+  const k = claveCatastro(lon, lat);
+  if (CATR.cache.has(k)) return CATR.cache.get(k);
+  const r = await catastroHtml({ lng: lon, lat });
+  const info = r && r.estado === 'ok' ? interpretarReferencia((/<b>([^<]+)<\/b>/.exec(r.html) || [])[1] || '') : { tipo: 'ninguna' };
+  const valor = { tipo: r && r.estado === 'servicio' ? 'error' : info.tipo, ref: info.ref || '', parcela: info.parcela };
+  CATR.cache.set(k, valor);
+  return valor;
+}
+// Puntos de muestreo a lo largo de la ruta: cada 100 m, entre 20 y 500 muestras. Son consultas a un
+// servicio público, así que se acota el número para no castigarlo con rutas muy largas.
+function muestrasCatastro(pts) {
+  const total = pts[pts.length - 1].d;
+  const n = Math.max(2, Math.min(500, Math.ceil(total / 100)));
+  const paso = total / n, out = [];
+  let j = 0;
+  for (let i = 0; i <= n; i++) {
+    const d = Math.min(total, i * paso);
+    while (j < pts.length - 1 && pts[j + 1].d < d) j++;
+    const a = pts[j], b = pts[Math.min(j + 1, pts.length - 1)];
+    const span = b.d - a.d, f = span > 0 ? (d - a.d) / span : 0;
+    out.push({ lon: a.lon + (b.lon - a.lon) * f, lat: a.lat + (b.lat - a.lat) * f });
+  }
+  return out;
+}
+// Desplaza una línea unos metros a su derecha (paralela), en grados
+function desplazarLinea(coords, metros) {
+  if (coords.length < 2) return coords;
+  const mLat = 110540, out = [];
+  for (let i = 0; i < coords.length; i++) {
+    const a = coords[Math.max(0, i - 1)], b = coords[Math.min(coords.length - 1, i + 1)];
+    const lat = coords[i][1], mLon = 111320 * Math.cos(lat * Math.PI / 180);
+    const dx = (b[0] - a[0]) * mLon, dy = (b[1] - a[1]) * mLat;
+    const L = Math.hypot(dx, dy);
+    if (L < 0.01) { out.push([coords[i][0], coords[i][1]]); continue; }
+    // Normal a la derecha del sentido de marcha
+    out.push([coords[i][0] + (dy / L) * metros / Math.max(1, mLon), coords[i][1] - (dx / L) * metros / Math.max(1, mLat)]);
+  }
+  return out;
+}
+// Consulta las muestras y pinta la línea. Mientras se está dibujando la ruta, analyze() llama aquí en
+// cada trazo: en vez de lanzar una tanda de consultas por trazo (se solaparían), si ya hay una en
+// marcha se apunta que hay que repetirla y se repite al terminar.
+async function catastroLinea() {
+  if (!prefs.ovCatRuta || !S.pts || S.pts.length < 2 || !map.getSource('catastroRuta')) { limpiarCatastro(); return; }
+  if (CATR.pidiendo) { CATR.repetir = true; return; }
+  CATR.pidiendo = true;
+  try {
+    do {
+      CATR.repetir = false;
+      await recorrerCatastro();
+    } while (CATR.repetir && prefs.ovCatRuta && S.pts && S.pts.length >= 2);
+  } finally {
+    CATR.pidiendo = false;
+  }
+}
+async function recorrerCatastro() {
+  const gen = ++CATR.generacion;
+  const muestras = muestrasCatastro(S.pts);
+  const res = [];
+  let errores = 0;
+  for (let i = 0; i < muestras.length; i += 4) {
+    const tanda = muestras.slice(i, i + 4);
+    const r = await Promise.all(tanda.map(m => clasificarPunto(m.lon, m.lat).catch(() => ({ tipo: 'error' }))));
+    if (gen !== CATR.generacion) return;    // ha empezado otra ruta: se descarta esta
+    for (const x of r) { res.push(x); if (x.tipo === 'error') errores++; }
+    // Si el servicio no responde (sin conexión, por ejemplo), se deja de insistir
+    if (errores >= 3 && errores === res.length) break;
+  }
+  if (gen !== CATR.generacion) return;
+  const features = [];
+  let publico = 0, particular = 0, sin = 0;
+  let actual = null;
+  const cerrar = () => {
+    if (actual && actual.coords.length >= 2) {
+      features.push({ type: 'Feature', properties: { color: CAT_COLORES[actual.tipo] }, geometry: { type: 'LineString', coordinates: desplazarLinea(actual.coords, 8) } });
+    }
+    actual = null;
+  };
+  for (let i = 0; i < res.length; i++) {
+    const tipo = res[i].tipo;
+    if (tipo === 'publico' || tipo === 'particular') {
+      if (tipo === 'publico') publico++; else particular++;
+      if (!actual || actual.tipo !== tipo) {
+        // Las muestras alternan mucho (una parcela linda con un camino), así que un tramo de un solo
+        // punto también se dibuja: se alarga con la muestra anterior para que se vea el cambio.
+        const inicio = i > 0 ? [[muestras[i - 1].lon, muestras[i - 1].lat]] : [];
+        cerrar();
+        actual = { tipo, coords: inicio.concat([[muestras[i].lon, muestras[i].lat]]) };
+      } else {
+        actual.coords.push([muestras[i].lon, muestras[i].lat]);
+      }
+    } else { sin++; cerrar(); }
+  }
+  cerrar();
+  map.getSource('catastroRuta').setData({ type: 'FeatureCollection', features });
+  CATR.ultimo = { puntos: res.length, publico, particular, sin, errores, refs: new Set(res.map(r => r.ref).filter(Boolean)).size };
+  const partes = [];
+  if (publico) partes.push(`dominio público ${publico}/${res.length}`);
+  if (particular) partes.push(`parcelas particulares ${particular}/${res.length}`);
+  if (sin) partes.push(`sin referencia ${sin}`);
+  if (partes.length) setStatusProgreso(`Catastro sobre la ruta: ${partes.join(' · ')}` + (CATR.ultimo.refs ? ` · ${CATR.ultimo.refs} referencias` : ''));
+}
+
 async function catastroHtml(ll) {
   const url = `${CAT}/ovcservweb/OVCSWLocalizacionRC/OVCCoordenadas.asmx/Consulta_RCCOOR?SRS=EPSG:4326&Coordenada_X=${ll.lng.toFixed(6)}&Coordenada_Y=${ll.lat.toFixed(6)}`;
   try {
@@ -2518,14 +2705,10 @@ async function catastroHtml(ll) {
         : { estado: 'vacio', html: `<p>Sin referencia catastral en este punto${detalle}.</p>` };
     }
     let html = `<p class="ref">Ref. catastral <b>${rc}</b></p>`;
-    if (/^[0-9]{5}[A-Z]/.test(rc)) {
-      // Rústico: provincia(2) municipio(3) sector(1 letra) polígono(3) parcela(5), y en las
-      // referencias de 20 caracteres hay 4 de control al final. La parcela son los 5 dígitos
-      // anteriores a ese sufijo, no una posición fija desde el principio.
-      const cuerpo = rc.replace(/[A-Z]{2}$/, '');
-      const parc = parseInt(cuerpo.slice(-5), 10), pol = parseInt(rc.slice(6, 9), 10);
-      html += `<p>Polígono <b>${Number.isFinite(pol) ? pol : rc.slice(6, 9)}</b> · Parcela <b>${Number.isFinite(parc) ? parc : cuerpo.slice(-5)}</b></p>`;
-      html += Number.isFinite(parc) && parc >= 9000
+    const info = interpretarReferencia(rc);
+    if (info.tipo === 'publico' || info.tipo === 'particular') {
+      html += `<p>Polígono <b>${info.poligono}</b> · Parcela <b>${info.parcela}</b></p>`;
+      html += info.tipo === 'publico'
         ? '<p class="ok">● La numeración 9000+ es un indicio cartográfico de dominio público (camino, arroyo, carretera o vía pecuaria); no es una determinación jurídica.</p>'
         : '<p class="warn">● Parcela particular o patrimonial. Si hay un camino aquí, puede ser privado: compruébalo.</p>';
     } else {
