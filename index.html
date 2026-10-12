@@ -164,6 +164,12 @@ body.freehand #map .maplibregl-canvas-container, body.freehand #map canvas{touch
 .sp-track{position:relative;flex:1;min-width:80px;display:flex;align-items:center}
 .sp-track::before{content:'';position:absolute;left:50%;top:50%;width:2px;height:16px;margin:-8px 0 0 -1px;background:var(--paint);border-radius:1px;pointer-events:none}
 #playSpeed{width:100%;accent-color:var(--paint)}
+/* Velocidades fijas del reproductor (60x, 90x, 120x) */
+#speedPresets{justify-content:flex-end;gap:6px;margin-top:-4px}
+#speedPresets button{background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--muted);
+  border-radius:6px;padding:4px 9px;cursor:pointer;font:600 12px var(--body)}
+#speedPresets button.on{background:var(--paint);color:#1b1a0c;border-color:transparent}
+#speedVal{cursor:pointer}
 #speedVal{flex:none;min-width:84px;background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:5px 8px;
   font:700 14px/1 var(--display);font-variant-numeric:tabular-nums;cursor:pointer}
 #speedVal:focus-visible{outline:2px solid var(--paint);outline-offset:2px}
@@ -235,7 +241,6 @@ body.layout .movable *{pointer-events:none}
 <aside id="panel" aria-label="Controles">
   <header>
     <h1 id="panelTitle">Pendientes <span>3D</span></h1>
-    <button id="infoEncuadre2" title="Diagnóstico: qué zona queda libre y hasta dónde se ha encuadrado">i</button>
     <button id="collapse" aria-expanded="true" aria-controls="body" title="Plegar panel">–</button>
   </header>
   <div id="body">
@@ -368,9 +373,6 @@ body.layout .movable *{pointer-events:none}
           <button class="btn" id="buscarAct" type="button" style="flex:none">Buscar actualización</button>
         </div>
         <p class="hint" id="actEstado" hidden></p>
-        <div class="row">
-          <button class="btn" id="infoEncuadre" type="button">Info de encuadre</button>
-        </div>
       </div>
     </details>
 
@@ -407,6 +409,12 @@ body.layout .movable *{pointer-events:none}
     </div>
     <span class="sp-end" aria-hidden="true">▶▶</span>
     <button type="button" id="speedVal" title="Volver a la velocidad real">▶ 1x real</button>
+  </div>
+  <!-- Velocidades fijas: el deslizador llega hasta 60x, y con estos botones se pasa a 90x y 120x -->
+  <div class="prow" id="speedPresets">
+    <button type="button" data-sp="60">60x</button>
+    <button type="button" data-sp="90">90x</button>
+    <button type="button" data-sp="120">120x</button>
   </div>
 </div>
 <div id="live" hidden aria-live="off"></div>
@@ -1630,26 +1638,54 @@ function showPlayer() {
   if (!ok) { if (PLAY.on) pausePlay(); $('live').hidden = true; }
 }
 $('playBtn').addEventListener('click', () => PLAY.on ? pausePlay() : startPlay());
-// Deslizador de velocidad: centro = 1x real; a la derecha hasta 60x; a la izquierda, marcha atrás hasta 60x.
-// Escala logarítmica, con una zona central que se ajusta sola a la velocidad real.
+// Deslizador de velocidad: centro = 1x real; a la derecha, hasta 60x; a la izquierda, marcha atrás
+// hasta 60x. Los extremos del deslizador pasan a 90x y 120x, y los botones de al lado los fijan
+// directamente (con PLAY.speed fijo, el deslizador no manda hasta que se vuelve a tocar).
+const VELOCIDADES = [1, 2, 4, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 60, 90, 120];
+let velocidadFija = null;
 function speedFromSlider(v) {
   if (Math.abs(v) <= 5) return 1;
-  const m = Math.pow(60, (Math.abs(v) - 5) / 95);
+  const a = Math.abs(v);
+  if (a >= 97) return v > 0 ? 120 : -120;    // extremo: 120x
+  if (a >= 90) return v > 0 ? 90 : -90;      // 90x
+  const m = Math.pow(60, (a - 5) / 89);      // hasta 60x antes de los dos tramos finales
   return v > 0 ? m : -m;
 }
 function fmtSpeed(sp) {
   const a = Math.abs(sp), n = a < 10 ? a.toFixed(1).replace('.', ',').replace(',0', '') : Math.round(a);
   return (sp < 0 ? '◀◀ ' : '▶ ') + n + 'x' + (sp === 1 ? ' real' : '');
 }
+// Velocidad fija desde los botones: se marca cuál está activa y el texto grande la muestra
+function fijarVelocidad(sp) {
+  velocidadFija = sp;
+  PLAY.speed = sp;
+  $('speedVal').textContent = fmtSpeed(sp);
+  for (const b of document.querySelectorAll('#speedPresets button')) {
+    b.classList.toggle('on', +b.dataset.sp === Math.abs(sp));
+  }
+}
 function setSpeedFromSlider() {
   const v = +$('playSpeed').value;
   if (Math.abs(v) <= 5 && v !== 0) $('playSpeed').value = 0;
+  velocidadFija = null;
   PLAY.speed = speedFromSlider(+$('playSpeed').value);
   $('speedVal').textContent = fmtSpeed(PLAY.speed);
+  for (const b of document.querySelectorAll('#speedPresets button')) {
+    b.classList.toggle('on', Math.abs(Math.abs(PLAY.speed) - +b.dataset.sp) < 0.5);
+  }
   if (!PLAY.on && $('playBtn').textContent === '↺') { $('playBtn').textContent = '▶'; $('playBtn').setAttribute('aria-label', 'Reproducir'); }
 }
 $('playSpeed').addEventListener('input', setSpeedFromSlider);
-$('speedVal').addEventListener('click', () => { $('playSpeed').value = 0; setSpeedFromSlider(); });
+for (const b of document.querySelectorAll('#speedPresets button')) {
+  b.addEventListener('click', () => fijarVelocidad(+b.dataset.sp * (velocidadFija < 0 ? -1 : 1)));
+}
+$('speedVal').addEventListener('click', () => {
+  // Un toque: velocidad real. Si ya está en real, va subiendo por la lista (1, 2, 4… 60, 90, 120)
+  const actual = Math.abs(PLAY.speed);
+  if (actual === 1) { fijarVelocidad(2); return; }
+  const i = VELOCIDADES.findIndex(v => v >= actual - 0.001);
+  fijarVelocidad(VELOCIDADES[Math.min(VELOCIDADES.length - 1, i + 1)]);
+});
 
 // Modo «Mover controles»: cualquier bloque flotante se arrastra; la posición se guarda en prefs.layout
 prefs.layout = prefs.layout || {};
@@ -2666,10 +2702,8 @@ function infoEncuadre() {
   }
 }
 $('diagCerrar').addEventListener('click', () => { $('diag').hidden = true; });
-for (const id of ['infoEncuadre', 'infoEncuadre2']) {
-  const b = $(id);
-  if (b) b.addEventListener('click', infoEncuadre);
-}
+// infoEncuadre() se queda en el código por si hace falta otra vez, pero ya no hay botón: se llegó a
+// él desde el panel y desde Ajustes para diagnosticar el encuadre del móvil.
 
 // También en la app Android cuando carga la web desde Vercel (no desde la copia local)
 if ('serviceWorker' in navigator && location.protocol.startsWith('http') && !(NATIVE && location.hostname === 'localhost')) {

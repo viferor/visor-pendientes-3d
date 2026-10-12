@@ -148,19 +148,42 @@ function descendants(n) {
   return out;
 }
 
+function coincideSimple(n, s) {
+  if (s.startsWith('.') && n.classList.contains(s.slice(1))) return true;
+  if (s.startsWith('#') && n.id === s.slice(1)) return true;
+  // [atributo="valor"], con o sin etiqueta delante: #speedPresets [data-sp="90"]
+  const m = /^([a-zA-Z]*)\s*\[([\w-]+)(?:=["']([^"']*)["'])?\]$/.exec(s);
+  if (m) {
+    const etiquetaOk = !m[1] || n.tagName === m[1].toLowerCase();
+    const tiene = Object.prototype.hasOwnProperty.call(n.attributes, m[2]);
+    const valorOk = m[3] === undefined || n.attributes[m[2]] === m[3];
+    return etiquetaOk && tiene && valorOk;
+  }
+  if (/^[a-z]+$/i.test(s)) return n.tagName === s.toLowerCase();
+  if (s.includes('.') && !s.startsWith('.')) {
+    const [tag, cls] = s.split('.');
+    return n.tagName === tag.toLowerCase() && n.classList.contains(cls);
+  }
+  return false;
+}
+// Soporta selectores simples y descendentes («#speedPresets button»)
+function coincide(n, sel) {
+  const partes = String(sel).split(/\s+/).filter(Boolean);
+  if (!partes.length) return false;
+  if (!coincideSimple(n, partes[partes.length - 1])) return false;
+  let actual = n.parentNode;
+  for (let i = partes.length - 2; i >= 0; i--) {
+    let visto = false;
+    while (actual) { if (coincideSimple(actual, partes[i])) { visto = true; actual = actual.parentNode; break; } actual = actual.parentNode; }
+    if (!visto) return false;
+  }
+  return true;
+}
 function queryAll(root, sel) {
   const sels = String(sel).split(',').map(s => s.trim()).filter(Boolean);
   const out = [];
   for (const n of descendants(root)) {
-    for (const s of sels) {
-      if (s.startsWith('.') && n.classList.contains(s.slice(1))) { out.push(n); break; }
-      if (s.startsWith('#') && n.id === s.slice(1)) { out.push(n); break; }
-      if (/^[a-z]+$/i.test(s) && n.tagName === s.toLowerCase()) { out.push(n); break; }
-      if (s.includes('.') && !s.startsWith('.')) {
-        const [tag, cls] = s.split('.');
-        if (n.tagName === tag.toLowerCase() && n.classList.contains(cls)) { out.push(n); break; }
-      }
-    }
+    for (const s of sels) if (coincide(n, s)) { out.push(n); break; }
   }
   return out;
 }
@@ -470,7 +493,8 @@ export function loadApp({ fetchImpl, imageMode, AndroidGpx } = {}) {
   gradeColor, loadTrack, openFile, fitRoute, updateLabels, clearLabels, saveOffline, deleteOffline,
   updateOfflineButton, map, idxAt, segAt, applyBasemap, applyWmsOverlays, applyProfilePrefs, loadTile, tileCache, gpxFile,
   queryWms, catastroHtml, queryPoint, loadGpxText, cargarGpxNativo, indiceMasCercano, initToqueTrack,
-  leerVersionPublicada, buscarActualizacion, mostrarVersion, huecosMapa, encuadrarRuta };
+  leerVersionPublicada, buscarActualizacion, mostrarVersion, huecosMapa, encuadrarRuta, infoEncuadre,
+  speedFromSlider, fijarVelocidad };
 for (const n of ['WMSOV','MAP_NAMES','offlineBreakdown','offlineTileKind','OFFLINE_VT','OFM_MAXZOOM','TILE_CACHE_MAX','tileCacheSize','tileCacheKeys','stopPrefetch','repetirEncuadreSiToca','revisarEncuadrePendiente']) {
   try { globalThis.__api[n] = eval(n); } catch (e) { globalThis.__api[n] = undefined; }
 }

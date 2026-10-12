@@ -284,26 +284,51 @@ await test('R-encuadre-4', 'Los huecos de los paneles nunca se comen la pantalla
   return { detail: `en pantalla de 360×772 con un panel de 700 px de alto, los huecos quedan en arriba ${h.arriba}, abajo ${h.abajo}, izq ${h.izquierda}, der ${h.derecha}` };
 });
 
-await test('R-encuadre-3', 'El botón «i» del panel muestra las medidas al pulsarlo de verdad', async () => {
+await test('R-encuadre-3', 'El diagnóstico del encuadre sigue disponible en el código', async () => {
   const app2 = loadApp();
   const a2 = app2.api();
   await a2.loadTrack('Medir', rutaSintetica(40), false);
-  const boton = app2.el('infoEncuadre2');
-  assert(boton, 'debería existir el botón «i» en el panel');
+  // Los botones «i» y «Info de encuadre» se quitaron cuando dejaron de hacer falta, pero la función
+  // se queda: si vuelve a descuadrarse en algún móvil, se engancha otra vez en un minuto.
+  const web = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
+  assert(/function infoEncuadre\(/.test(web), 'debería seguir existiendo la función de diagnóstico');
+  assert(!/id="infoEncuadre/.test(web), 'los botones de diagnóstico ya no deberían estar en la interfaz');
   const salida = app2.el('diag');
-  assert(salida, 'debería existir el cuadro de diagnóstico');
-  assert(salida.hidden, 'el cuadro debería empezar oculto');
-  const manejadores = boton.click();   // se ejecutan los manejadores reales de «click»
-  assert(manejadores >= 1, 'el botón «i» no tiene ningún manejador de click enganchado');
-  assert(!salida.hidden, 'al pulsar la «i» debería aparecer el cuadro de diagnóstico en pantalla');
+  assert(salida && salida.hidden, 'el cuadro de diagnóstico debería existir y empezar oculto');
+  a2.infoEncuadre();
+  assert(!salida.hidden, 'al llamar al diagnóstico debería aparecer el cuadro');
   const texto = app2.el('diagTexto').textContent;
-  assert(/Ventana/.test(texto), 'debería decir el tamaño de la ventana: ' + texto);
-  assert(/Cámara: centro/.test(texto), 'debería decir dónde está la cámara: ' + texto);
-  assert(/Último encuadre|ninguno/.test(texto), 'debería decir el último encuadre: ' + texto);
-  // Y se puede cerrar
-  const cerrado = app2.el('diagCerrar').click();
-  assert(cerrado >= 1 && salida.hidden, 'el botón Cerrar debería ocultar el cuadro');
-  return { detail: 'cuadro visible al pulsar la «i» (' + texto.split('\n')[0].slice(0, 60) + '…) y se cierra con Cerrar' };
+  assert(/Ventana/.test(texto) && /Cámara: centro/.test(texto), 'debería medir ventana y cámara: ' + texto);
+  app2.el('diagCerrar').click();
+  assert(salida.hidden, 'y se cierra con su botón');
+  return { detail: 'el cuadro de diagnóstico sigue disponible (sin botón en la interfaz) y mide ventana y cámara' };
+});
+
+await test('S-velocidad', 'El reproductor llega a 90x y 120x', () => {
+  const web = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
+  for (const v of [60, 90, 120]) {
+    assert(new RegExp(`data-sp="${v}"`).test(web), 'falta el botón de velocidad ' + v + 'x');
+  }
+  assert(/fijarVelocidad/.test(web), 'falta la función que fija la velocidad de los botones');
+  const app2 = loadApp();
+  const a2 = app2.api();
+  // 1) Los extremos del deslizador dan 90x y 120x
+  eq(a2.speedFromSlider(100), 120, 'extremo derecho del deslizador');
+  eq(a2.speedFromSlider(-100), -120, 'extremo izquierdo (marcha atrás)');
+  eq(a2.speedFromSlider(92), 90, 'tramo de 90x');
+  eq(a2.speedFromSlider(50), a2.speedFromSlider(50), 'coherente');
+  assert(a2.speedFromSlider(50) < 60 && a2.speedFromSlider(50) > 1, 'el centro sigue siendo progresivo: ' + a2.speedFromSlider(50));
+  eq(a2.speedFromSlider(0), 1, 'centro = velocidad real');
+  // 2) Los botones fijan la velocidad de verdad
+  const botones = ['60', '90', '120'].map(v => ({ v: +v, el: app2.doc.querySelector(`#speedPresets [data-sp="${v}"]`) }));
+  for (const b of botones) assert(b.el, 'no se encontró el botón ' + b.v + 'x');
+  for (const b of botones) {
+    b.el.click();
+    eq(a2.PLAY.speed, b.v, `al pulsar ${b.v}x la velocidad debe ser ${b.v}`);
+    assert(new RegExp(b.v + 'x').test(app2.el('speedVal').textContent), `el texto debería mostrar ${b.v}x: ` + app2.el('speedVal').textContent);
+    assert(b.el.classList.contains('on'), 'el botón pulsado debería quedar marcado');
+  }
+  return { detail: 'extremos del deslizador: 90x y 120x; botones 60x/90x/120x fijan la velocidad y se marcan' };
 });
 
 await test('Q5', 'Si hay versión nueva se avisa y se ofrece recargar (sin recargar sola)', async () => {
