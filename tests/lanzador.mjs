@@ -4,6 +4,7 @@ import { resultados, resumen } from './comun.mjs';
 import './pruebas/gpx.test.mjs';
 import './pruebas/calculo.test.mjs';
 import './pruebas/app.test.mjs';
+import './pruebas/android.test.mjs';
 import './pruebas/servicio.test.mjs';
 import './pruebas/offline.test.mjs';
 import fs from 'node:fs';
@@ -13,7 +14,7 @@ const pad = (s, n) => String(s).padEnd(n);
 console.log('\n=== Pruebas de Visor de Pendientes 3D ===\n');
 for (const r of resultados) {
   console.log(`[${pad(r.status, 7)}] ${pad(r.id, 4)} ${r.name}`);
-  if (r.detail) console.log(`            → ${String(r.detail).replace(/\n/g, '\n              ')}`);
+  if (r.detail) console.log(`            ??? ${String(r.detail).replace(/\n/g, '\n              ')}`);
 }
 const cuenta = resumen();
 console.log('\nResumen: ' + JSON.stringify(cuenta));

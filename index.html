@@ -1672,15 +1672,40 @@ async function loadTrack(name, pts, save = true, avisos = '') {
   // que es quien escribe el mensaje de estado.
   if (avisos) setStatus((avisos + ' · ' + $('status').textContent).trim());
 }
+// Carga un GPX a partir de su texto. Se usa tanto para el archivo elegido en el selector o
+// arrastrado al mapa como para el .gpx que envía otra aplicación en Android (cargarGpxNativo).
+async function loadGpxText(texto, nombreArchivo) {
+  const { name, pts, descartados } = parseGPX(texto);
+  const avisos = [];
+  if (descartados) avisos.push(`${descartados} punto${descartados > 1 ? 's' : ''} con coordenadas imposibles descartado${descartados > 1 ? 's' : ''}`);
+  if (!pts.some(p => isFinite(p.ele))) avisos.push('el archivo no trae altitudes: se usará el modelo de terreno si hay conexión');
+  const titulo = name || String(nombreArchivo || 'Recorrido').replace(/\.gpx$/i, '');
+  await loadTrack(titulo, pts, true, avisos.join(' · '));
+}
 async function openFile(file) {
   if (!file) return;
   try {
-    const { name, pts, descartados } = parseGPX(await file.text());
-    const avisos = [];
-    if (descartados) avisos.push(`${descartados} punto${descartados > 1 ? 's' : ''} con coordenadas imposibles descartado${descartados > 1 ? 's' : ''}`);
-    if (!pts.some(p => isFinite(p.ele))) avisos.push('el archivo no trae altitudes: se usará el modelo de terreno si hay conexión');
-    await loadTrack(name || file.name.replace(/\.gpx$/i, ''), pts, true, avisos.join(' · '));
+    await loadGpxText(await file.text(), file.name);
   } catch (err) { setStatus(err.message, true); }
+}
+// Un .gpx abierto desde otra aplicación en Android llega por el puente de JavaScript que expone
+// MainActivity (window.AndroidGpx). Se consulta varias veces porque la app puede tardar en cargar
+// y el archivo se lee en segundo plano en el lado nativo.
+function cargarGpxNativo() {
+  const puente = window.AndroidGpx;
+  if (!puente || typeof puente.pendiente !== 'function') return;
+  let intentos = 0;
+  const preguntar = async () => {
+    let texto = null;
+    try { texto = puente.pendiente(); } catch (e) { return; }
+    if (texto) {
+      try { await loadGpxText(texto, 'Recorrido recibido'); }
+      catch (err) { setStatus('No se pudo abrir el archivo recibido: ' + err.message, true); }
+      return;
+    }
+    if (++intentos < 20) setTimeout(preguntar, 500);   // hasta 10 s esperando a que llegue
+  };
+  preguntar();
 }
 function syncMode() {
   $('modeGpx').disabled = !S.hasEle;
@@ -2297,6 +2322,7 @@ if ('launchQueue' in window) {
 applyProfilePrefs();
 applyBasemap();
 syncRouteButtons();
+cargarGpxNativo();   // si la app se abrió con un .gpx enviado desde otra aplicación (Android)
 // Al arrancar: el último track abierto o dibujado; si no hay ninguno, el ejemplo del Veleta
 (async function start() {
   if ('launchQueue' in window && new URLSearchParams(location.search).has('file')) return;
