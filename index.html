@@ -601,6 +601,18 @@ const mapReady = new Promise(res => map.on('load', () => {
 /* ---------- Estado ---------- */
 const S = { raw: null, name: '', mode: 'gpx', hasEle: false, terrainEle: null, pts: null, segs: null, L: 100, labels: new Map() };
 function setStatus(msg, err) { $('status').textContent = msg || ''; $('status').classList.toggle('err', !!err); }
+// Avisos que no deben perderse: analyze()/render() escriben el estado al terminar sus tareas de
+// fondo (descarga de relieve, análisis de la ruta), y sin esto podían borrar un aviso importante
+// —por ejemplo el de un archivo recibido que no se ha podido abrir— antes de que el usuario lo lea.
+const StatusNota = { texto: '', error: false };
+function setStatusNota(msg, err) {
+  StatusNota.texto = msg || '';
+  StatusNota.error = !!err;
+  if (!msg) setStatus('');
+}
+function aplicarStatusNota() {
+  if (StatusNota.texto) setStatus(StatusNota.texto, StatusNota.error);
+}
 
 /* ---------- GPX: lectura ---------- */
 function parseGPX(text) {
@@ -817,6 +829,7 @@ async function analyze() {
   setStatus(`Altitud ${S.mode === 'terrain' ? 'del modelo de terreno' : 'del GPX'} · tramos de ${S.L} m` +
     (S.mode === 'terrain' && S.L < 25 ? ' · el relieve no tiene detalle para tramos tan cortos; usa la altitud del GPX' : '') +
     (saltos ? ` · el archivo trae ${saltos + 1} segmentos separados (hueco mayor de ${fmtInt(mayorSalto)} m): el tramo que los cruza no es un camino real` : ''));
+  aplicarStatusNota();   // si había un aviso pendiente (archivo recibido, etc.), no se pierde
   return true;
 }
 
@@ -1699,8 +1712,12 @@ function cargarGpxNativo() {
     let texto = null;
     try { texto = puente.pendiente(); } catch (e) { return; }
     if (texto) {
-      try { await loadGpxText(texto, 'Recorrido recibido'); }
-      catch (err) { setStatus('No se pudo abrir el archivo recibido: ' + err.message, true); }
+      try {
+        await loadGpxText(texto, 'Recorrido recibido');
+        setStatusNota('');   // cargado sin problemas: el aviso pendiente ya no hace falta
+      } catch (err) {
+        setStatusNota('No se pudo abrir el archivo recibido: ' + err.message, true);
+      }
       return;
     }
     if (++intentos < 20) setTimeout(preguntar, 500);   // hasta 10 s esperando a que llegue

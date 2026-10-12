@@ -34,25 +34,26 @@ await test('O1', 'La web recoge sola el .gpx que le pasa Android y lo carga', as
   return { detail: `cargado solo, tras ${pedidos} consultas al puente: «${a2.S.name}» con ${a2.S.pts.length} puntos` };
 });
 
-await test('O2', 'Si el archivo recibido no es un GPX válido, se avisa sin romper la app', async () => {
+await test('O2', 'Si el archivo recibido no es un GPX válido, se avisa y el aviso no se pierde', async () => {
   const app2 = loadApp({ AndroidGpx: { pendiente: () => 'esto no es un gpx' } });
   const a2 = app2.api();
-  // El aviso puede quedar tapado después por el estado del análisis del track de ejemplo, así que
-  // se muestrea durante unos segundos en lugar de mirar solo el estado final.
+  // El aviso debe aparecer Y seguir ahí cuando termina el análisis del track de fondo: antes lo
+  // pisaba el mensaje del análisis, así que el usuario podía no llegar a leerlo.
   let aviso = null;
   const t0 = Date.now();
-  while (Date.now() - t0 < 3000) {
+  while (Date.now() - t0 < 4000) {
     const st = app2.el('status').textContent;
     if (/no se pudo abrir/i.test(st)) { aviso = st; break; }
     await new Promise(r => setTimeout(r, 50));
   }
   assert(aviso !== null, 'debería avisar de que el archivo recibido no se pudo abrir');
-  // La app debe quedar utilizable: con el recorrido que ya tenía o, si aún estaba arrancando, con
-  // el de ejemplo. Nunca con la pantalla en blanco ni con un error permanente.
+  await new Promise(r => setTimeout(r, 2500));   // tiempo de sobra para que acabe el análisis
+  const despues = app2.el('status').textContent;
+  assert(/no se pudo abrir/i.test(despues), 'el aviso no debe borrarse cuando termina el análisis: ' + JSON.stringify(despues));
   await esperarArranque(a2);
   assert(a2.S.pts && a2.S.pts.length > 1, 'la app debe seguir utilizable con un recorrido cargado');
   assert(a2.S.segs && a2.S.segs.length > 0, 'el recorrido debe estar analizado (perfil y pendientes)');
-  return { detail: 'aviso mostrado: ' + aviso + ' · la app sigue con «' + a2.S.name + '» (' + a2.S.pts.length + ' puntos, ' + a2.S.segs.length + ' tramos)' };
+  return { detail: 'aviso: ' + aviso + ' · sigue visible tras el análisis · app con «' + a2.S.name + '» (' + a2.S.pts.length + ' puntos)' };
 });
 
 await test('O3', 'Sin puente nativo (navegador, PWA) no pasa nada', () => {
