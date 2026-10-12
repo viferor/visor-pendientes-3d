@@ -24,9 +24,14 @@
             </intent-filter>
 
             <!-- Abrir un .gpx desde otra aplicación (Archivos, un correo, un mensajero…).
-                 Se acepta por tipo MIME y, sobre todo, por extensión del archivo: muchas
-                 aplicaciones no etiquetan bien los .gpx. MainActivity comprueba el nombre antes
-                 de cargar nada, así que la app no se ofrece para archivos que no sean GPX. -->
+                 Son DOS filtros a propósito:
+                 1) El primero cubre los tipos MIME que sí anuncian un GPX o un XML.
+                 2) El segundo acepta cualquier content:// que acabe en .gpx y, como muchos
+                    exploradores no declaran bien el tipo (mandan application/octet-stream o
+                    genérico) y la ruta interna no siempre lleva la extensión, se acepta cualquier
+                    tipo MIME: MainActivity comprueba después que el archivo sea realmente un GPX
+                    (mirando el nombre y el contenido) y, si no lo es, avisa sin cargar nada.
+                    Sin este segundo filtro, «Abrir con» no ofrecía la app. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -34,9 +39,20 @@
                 <data android:scheme="content" android:mimeType="application/gpx+xml" />
                 <data android:scheme="content" android:mimeType="application/xml" />
                 <data android:scheme="content" android:mimeType="text/xml" />
+                <data android:scheme="content" android:mimeType="application/octet-stream" />
                 <data android:scheme="file" android:mimeType="application/gpx+xml" />
+                <data android:scheme="file" android:mimeType="application/octet-stream" />
                 <data android:scheme="content" android:host="*" android:pathPattern=".*\\.gpx" />
                 <data android:scheme="file" android:host="*" android:pathPattern=".*\\.gpx" />
+            </intent-filter>
+
+            <!-- Cualquier content:// o file:// (el tipo MIME que anuncian muchos proveedores no es
+                 fiable). MainActivity filtra por el nombre y por el contenido del archivo. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:mimeType="*/*" />
+                <data android:scheme="file" android:mimeType="*/*" />
             </intent-filter>
 
             <!-- Compartir un .gpx con la app desde el botón «Compartir» de otra aplicación. -->

@@ -7,9 +7,8 @@ import android.webkit.JavascriptInterface;
 
 import com.getcapacitor.BridgeActivity;
 
-import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 
 /**
@@ -19,8 +18,8 @@ import java.nio.charset.StandardCharsets;
  * .gpx enviado desde otra aplicación (Correo, WhatsApp, Archivos, un explorador de ficheros…).
  *
  * Cómo funciona:
- *  - El manifiesto declara un intent-filter para ACTION_VIEW y ACTION_SEND con archivos .gpx.
- *  - Aquí se lee el contenido del archivo y se guarda en memoria.
+ *  - El manifiesto declara los intent-filter de ACTION_VIEW (abrir con) y ACTION_SEND (compartir).
+ *  - Aquí se comprueba que el archivo sea un GPX, se lee y se guarda en memoria.
  *  - La web lo recoge con el puente de JavaScript "AndroidGpx" (ver index.html, cargarGpxNativo),
  *    tanto al arrancar como si la app ya estaba abierta (onNewIntent).
  */
@@ -62,41 +61,56 @@ public class MainActivity extends BridgeActivity {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                if (!pareceGpx(uri)) return;
-                gpxPendiente = leerTexto(uri);
+                // Con «Abrir con» la app se ofrece para cualquier archivo (ver el manifiesto), así
+                // que aquí se descartan los que no son GPX mirando primero el nombre, que es barato,
+                // y solo después un poco de contenido. Así no se descarga un archivo grande.
+                String nombre = nombreDe(uri);
+                boolean nombreEsGpx = nombre != null && nombre.toLowerCase(java.util.Locale.ROOT).endsWith(".gpx");
+                if (esVista && !nombreEsGpx) {
+                    String cabeza = leerCabeza(uri, 512);
+                    if (cabeza == null || !(cabeza.contains("<gpx") || cabeza.contains("<GPX"))) return;
+                }
+                if (nombreEsGpx || esEnvio) {
+                    String texto = leerTexto(uri);
+                    if (texto == null || !texto.contains("<")) return;
+                    if (!nombreEsGpx && !(texto.contains("<gpx") || texto.contains("<GPX"))) return;
+                    gpxPendiente = texto;
+                } else {
+                    gpxPendiente = leerTexto(uri);
+                }
             }
         }, "leer-gpx").start();
     }
 
-    /**
-     * Comprueba que el archivo recibido es un GPX antes de cargarlo, porque el intent-filter de
-     * «compartir» acepta también XML y binarios genéricos. Se mira la extensión y, si no la hay,
-     * las primeras letras del contenido.
-     */
-    private boolean pareceGpx(Uri uri) {
-        String nombre = null;
+    /** Nombre real del archivo según el proveedor de contenido (o el último tramo de la ruta). */
+    private String nombreDe(Uri uri) {
         try {
             android.database.Cursor c = getContentResolver().query(uri, null, null, null, null);
             if (c != null) {
                 int col = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
-                if (c.moveToFirst() && col >= 0) nombre = c.getString(col);
-                c.close();
+                if (c.moveToFirst() && col >= 0) {
+                    String n = c.getString(col);
+                    c.close();
+                    if (n != null && !n.trim().isEmpty()) return n;
+                } else {
+                    c.close();
+                }
             }
         } catch (Exception ignorado) { }
-        if (nombre == null) nombre = uri.getLastPathSegment();
-        if (nombre != null && nombre.toLowerCase(java.util.Locale.ROOT).endsWith(".gpx")) return true;
-        // Sin extensión fiable: se comprueba que el contenido empiece como un GPX.
+        return uri.getLastPathSegment();
+    }
+
+    /** Lee solo los primeros bytes: sirve para comprobar el tipo sin descargar el archivo entero. */
+    private String leerCabeza(Uri uri, int maximo) {
         InputStream entrada = null;
         try {
             entrada = getContentResolver().openInputStream(uri);
-            if (entrada == null) return false;
-            byte[] cabeza = new byte[512];
+            if (entrada == null) return null;
+            byte[] cabeza = new byte[maximo];
             int leidos = entrada.read(cabeza);
-            if (leidos <= 0) return false;
-            String inicio = new String(cabeza, 0, leidos, StandardCharsets.UTF_8);
-            return inicio.contains("<gpx") || inicio.contains("<?xml");
+            return leidos > 0 ? new String(cabeza, 0, leidos, StandardCharsets.UTF_8) : null;
         } catch (Exception e) {
-            return false;
+            return null;
         } finally {
             try { if (entrada != null) entrada.close(); } catch (Exception ignorado) { }
         }
@@ -107,12 +121,11 @@ public class MainActivity extends BridgeActivity {
         try {
             entrada = getContentResolver().openInputStream(uri);
             if (entrada == null) return null;
-            BufferedReader lector = new BufferedReader(new InputStreamReader(entrada, StandardCharsets.UTF_8));
-            StringBuilder texto = new StringBuilder();
-            char[] trozo = new char[8192];
+            java.io.ByteArrayOutputStream salida = new ByteArrayOutputStream();
+            byte[] trozo = new byte[16384];
             int leidos;
-            while ((leidos = lector.read(trozo)) > 0) texto.append(trozo, 0, leidos);
-            return texto.length() > 0 ? texto.toString() : null;
+            while ((leidos = entrada.read(trozo)) > 0) salida.write(trozo, 0, leidos);
+            return salida.size() > 0 ? new String(salida.toByteArray(), StandardCharsets.UTF_8) : null;
         } catch (Exception e) {
             return null;
         } finally {
