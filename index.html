@@ -600,6 +600,9 @@ const mapReady = new Promise(res => map.on('load', () => {
 
 /* ---------- Estado ---------- */
 const S = { raw: null, name: '', mode: 'gpx', hasEle: false, terrainEle: null, pts: null, segs: null, L: 100, labels: new Map() };
+// Número de la carga de ruta en curso: sirve para que una carga antigua (el track de ejemplo del
+// arranque) no pise a una más nueva (un .gpx abierto a mano o enviado desde otra aplicación).
+const CargaActual = { n: 0 };
 function setStatus(msg, err) { $('status').textContent = msg || ''; $('status').classList.toggle('err', !!err); }
 // Avisos que no deben perderse: analyze()/render() escriben el estado al terminar sus tareas de
 // fondo (descarga de relieve, análisis de la ruta), y sin esto podían borrar un aviso importante
@@ -814,6 +817,10 @@ async function analyze() {
   $('seglen').options[0].textContent = `Automático (${auto >= 1000 ? auto / 1000 + ' km' : auto + ' m'})`;
 
   computeTimeData(pts);
+  // Si mientras se analizaba esta ruta ha empezado otra (el track de ejemplo del arranque frente a
+  // un .gpx abierto a la vez), este análisis ya no vale y no debe publicar nada: ni estado, ni
+  // tramos, ni etiquetas. Sin esto, la carga vieja podía pisar a la nueva al terminar.
+  if (S.raw !== rawRef) return false;
   if (!S.pts || S.pts.length !== pts.length) S.sel = null;
   S.pts = pts;
   S.segs = buildSegments(pts, S.L);
@@ -1665,9 +1672,15 @@ async function idbGet(key) {
 const saveLastTrack = (name, pts) => idbSet('lastTrack', { name, pts, savedAt: Date.now() });
 
 async function loadTrack(name, pts, save = true, avisos = '') {
+  // Cada carga lleva un número: si mientras se analiza una ruta empieza otra (por ejemplo el track
+  // de ejemplo del arranque y, a la vez, un .gpx enviado desde otra aplicación), manda la más nueva.
+  // Sin esto, la ruta de ejemplo podía terminar pisando el archivo que acabas de abrir.
+  const carga = ++CargaActual.n;
+  const esLaUltima = () => CargaActual.n === carga;
   stopPrefetch();
   if (save) saveLastTrack(name, pts);
   await mapReady;
+  if (!esLaUltima()) return;
   if (D.active) endDraw(false);
   S.raw = { pts };
   S.name = name;
@@ -1679,8 +1692,16 @@ async function loadTrack(name, pts, save = true, avisos = '') {
   $('routeName').value = name || 'Mi ruta';
   clearSelection();
   try {
-    if (await analyze()) fitRoute();
-  } catch (err) { setStatus(avisos ? avisos + ' · ' + err.message : err.message, true); return; }
+    if (await analyze()) {
+      if (!esLaUltima()) return;
+      fitRoute();
+    }
+  } catch (err) {
+    if (!esLaUltima()) return;
+    setStatus(avisos ? avisos + ' · ' + err.message : err.message, true);
+    return;
+  }
+  if (!esLaUltima()) return;
   // El aviso de la altitud ausente o de los puntos descartados se añade después del análisis,
   // que es quien escribe el mensaje de estado.
   if (avisos) setStatus((avisos + ' · ' + $('status').textContent).trim());
