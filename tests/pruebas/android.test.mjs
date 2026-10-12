@@ -382,7 +382,7 @@ await test('T-catastro', 'La línea paralela marca público en verde y particula
   await a2.loadTrack('Catastro', rutaSintetica(400), false);
   const muestras = a2.muestrasCatastro(a2.S.pts);
   const total = a2.S.pts[a2.S.pts.length - 1].d;
-  assert(muestras.length >= 2 && muestras.length <= 901, 'número de muestras fuera de rango: ' + muestras.length);
+  assert(muestras.length >= 2 && muestras.length <= 2501, 'número de muestras fuera de rango: ' + muestras.length);
   near(muestras[0].lon, a2.S.pts[0].lon, 1e-6, 'la primera muestra es el inicio');
   near(muestras[muestras.length - 1].lat, a2.S.pts[a2.S.pts.length - 1].lat, 1e-3, 'la última muestra es el final');
   // La línea paralela va desplazada, no encima
@@ -463,6 +463,52 @@ await test('T-catastro-3', 'Al dibujar una ruta también se traza la línea del 
   const features = (datos[1] && datos[1].features) || [];
   assert(features.length >= 1, 'debería haber algún tramo pintado: ' + features.length);
   return { detail: `dibujando una ruta de ${coords.length} puntos: ${n} consultas y ${features.length} tramos pintados en la fuente catastroRuta` };
+});
+
+await test('T-catastro-4', 'La caché evita repetir consultas dentro de la misma parcela', async () => {
+  const app2 = loadApp();
+  const a2 = app2.api();
+  // Ruta de unos 20 km: se muestrea cada 20 m (unos 1000 puntos), pero el servicio devuelve la MISMA
+  // referencia en todos los puntos, como una parcela larga. Se debe consultar una sola vez por zona.
+  const raw = [];
+  for (let i = 0; i <= 200; i++) raw.push({ lat: 37.2 + i * 0.0009, lon: -3.5, ele: 600 + i, t: NaN });
+  await a2.loadTrack('Parcela larga', raw, false);
+  const total = a2.S.pts[a2.S.pts.length - 1].d;
+  let n = 0;
+  app2.setFetch(async u => {
+    const s = String(u);
+    if (s.includes('Consulta_RCCOOR')) {
+      n++;
+      const ref = '18072A0010095000';   // siempre la misma parcela de dominio público
+      const xml = `<?xml version="1.0"?><consulta><pc1>${ref.slice(0,7)}</pc1><pc2>${ref.slice(7)}</pc2><ldt>P</ldt><cod>16</cod></consulta>`;
+      return { ok: true, status: 200, url: s, text: async () => xml, clone() { return this; }, blob: async () => ({ size: 1 }), json: async () => ({}), type: 'basic' };
+    }
+    return { ok: true, status: 200, url: s, text: async () => '', clone() { return this; }, blob: async () => ({ size: 1 }), json: async () => ({}), type: 'basic' };
+  });
+  a2.CATR.cache.clear();
+  a2.CATR.celdas.clear();
+  // Se espera a que la consulta termine de verdad (se lanza en segundo plano para no retrasar el dibujo)
+  const esperarFin = async (ms = 4000) => {
+    const t0 = Date.now();
+    while (a2.CATR.pidiendo && Date.now() - t0 < ms) await new Promise(r => setTimeout(r, 50));
+    await new Promise(r => setTimeout(r, 100));
+  };
+  a2.catastroLinea();
+  await esperarFin();
+  const dados = a2.CATR.ultimo;
+  assert(dados, 'debería haber un resumen del recorrido del Catastro');
+  assert(dados.puntos > 200, 'debería haber muchos puntos muestreados: ' + dados.puntos);
+  // Muestreo cada 20 m, pero una consulta cubre la zona de la parcela: se pregunta mucho menos
+  assert(n > 0, 'debería haber consultado el Catastro alguna vez');
+  // Con muestras cada 20 m y una ruta recta, las celdas de zona cubren ~27-111 m: unas 4 veces menos
+  // consultas que muestras. Con una parcela realmente larga el ahorro es mucho mayor.
+  assert(n < dados.puntos / 3, `debería consultar bastante menos que puntos muestreados: ${n} consultas para ${dados.puntos} muestras`);
+  // Y una vez conocida la zona, repetir el recorrido no cuesta ni una consulta más
+  const antes = n;
+  a2.catastroLinea();
+  await esperarFin();
+  assert(n === antes, `la segunda pasada no debería consultar nada más: ${antes} → ${n}`);
+  return { detail: `${(total / 1000).toFixed(1)} km: ${dados.puntos} muestras con ${antes} consultas la primera vez (${(dados.puntos / antes).toFixed(0)}× menos) y ninguna en la segunda` };
 });
 
 await test('Q5', 'Si hay versión nueva se avisa y se ofrece recargar (sin recargar sola)', async () => {

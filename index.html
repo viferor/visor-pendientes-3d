@@ -682,20 +682,29 @@ const mapReady = new Promise(res => map.on('load', () => {
     } });
   map.addLayer({ id: 'hover-pt', type: 'circle', source: 'hover',
     paint: { 'circle-radius': 7, 'circle-color': '#fff', 'circle-stroke-width': 3, 'circle-stroke-color': '#111' } });
-  // Línea del Catastro: dos trazos finos y paralelos, uno a cada lado del recorrido, que solo cambian
-  // de color según el tipo de parcela (verde: dominio público · rojo: particular). Sin bordes ni
-  // rellenos: es un aviso, no debe competir con el trazado de pendientes.
+  // Catastro sobre la ruta, en este orden:
+  //  1. Una franja de color BAJO el trazado, centrada en la ruta y más ancha que él (8-16 px): es lo que
+  //     identifica el tramo, verde si es dominio público y rojo si es parcela particular.
+  //  2. El trazo del track POR ENCIMA (route-casing y route-line se suben aquí con moveLayer, sin
+  //     duplicarlos: su color lo calcula el análisis de pendientes).
+  //  3. Los dos filos finos a cada lado, para que el límite del tramo quede marcado.
   // OJO: la fuente se llama 'catastroRuta' y no 'catastro', que ya es la capa raster de parcelas.
   map.addSource('catastroRuta', { type: 'geojson', data: empty });
-  // Dos trazos finos, uno a cada lado y pegados al recorrido. El grosor es fino a propósito (1,4-2,6 px)
-  // y el color va sin borde ni relleno: es un aviso, no debe competir con el trazado de pendientes.
-  const grosorCat = ['interpolate', ['linear'], ['zoom'], 10, 1.4, 14, 2, 17, 2.6];
+  const franjaCat = ['interpolate', ['linear'], ['zoom'], 10, 8, 14, 12, 17, 16];
+  const filoCat = ['interpolate', ['linear'], ['zoom'], 10, 1.4, 14, 2, 17, 2.6];
+  // 1) Franja de fondo
+  map.addLayer({ id: 'catastroFranja', type: 'line', source: 'catastroRuta',
+    layout: { 'line-cap': 'butt', 'line-join': 'round' },
+    paint: { 'line-color': ['get', 'color'], 'line-width': franjaCat, 'line-opacity': 0.55 } });
+  // 2) El track por encima de la franja
+  subirTrackSobreCatastro();
+  // 3) Filos finos a cada lado
   map.addLayer({ id: 'catastroIzq', type: 'line', source: 'catastroRuta',
     layout: { 'line-cap': 'round', 'line-join': 'round' },
-    paint: { 'line-color': ['get', 'color'], 'line-width': grosorCat, 'line-opacity': 0.95 } });
+    paint: { 'line-color': ['get', 'color'], 'line-width': filoCat, 'line-opacity': 0.95 } });
   map.addLayer({ id: 'catastroDer', type: 'line', source: 'catastroRuta',
     layout: { 'line-cap': 'round', 'line-join': 'round' },
-    paint: { 'line-color': ['get', 'color'], 'line-width': grosorCat, 'line-opacity': 0.95 } });
+    paint: { 'line-color': ['get', 'color'], 'line-width': filoCat, 'line-opacity': 0.95 } });
   // Si MapLibre falla al mover la cámara (o cualquier otra cosa), que se vea en el estado en vez de
   // quedarse en silencio: es lo que impedía saber por qué no se encuadraba en el móvil.
   map.on('error', e => {
@@ -2579,29 +2588,71 @@ function interpretarReferencia(rc) {
 // muestrea cada pocos metros y se consulta cada muestra. Con las respuestas se pinta una línea
 // paralela al trazado, desplazada unos metros a la derecha: verde donde la parcela es de dominio
 // público (9000+) y roja donde es particular. Los tramos sin referencia no se pintan.
-const CATR = { cache: new Map(), pidiendo: false, generacion: 0, avisado: false, ultimo: null };
+const CATR = { cache: new Map(), celdas: new Map(), pidiendo: false, generacion: 0, avisado: false, ultimo: null, consultas: 0, desdeCache: 0 };
 const CAT_COLORES = { publico: '#2ecc71', particular: '#e74c3c' };
 function claveCatastro(lon, lat) { return lon.toFixed(4) + ',' + lat.toFixed(4); }   // ~11 m
+// Celdas de varios tamaños (rejilla alineada) alrededor de cada punto consultado. La respuesta del
+// Catastro identifica la PARCELA ENTERA, así que si una parcela ocupa varios kilómetros no tiene
+// sentido preguntar punto por punto: se rellena la zona con su referencia y las muestras siguientes
+// que caigan ahí se resuelven sin consultar. Se devuelven de la celda más fina (~27 m) a la más gruesa
+// (~1,1 km) y manda la primera que coincida: la más pequeña es la más fiable, porque una celda gruesa
+// puede abarcar dos parcelas.
+const CAT_GRADOS = [0.00025, 0.0005, 0.001, 0.002, 0.005, 0.01];
+function celdasDe(lon, lat) {
+  const out = [];
+  for (const g of CAT_GRADOS) out.push(Math.floor(lon / g) + ',' + Math.floor(lat / g) + ',' + g);
+  return out;
+}
+// ¿Hay alguna consulta anterior lo bastante cerca para dar por hecho que es la misma parcela?
+function referenciaHeredada(lon, lat) {
+  for (const k of celdasDe(lon, lat)) { const v = CATR.celdas.get(k); if (v) return v; }
+  return null;
+}
+function apuntarCeldas(lon, lat, valor) {
+  if (!valor || (valor.tipo !== 'publico' && valor.tipo !== 'particular')) return;
+  for (const k of celdasDe(lon, lat)) if (!CATR.celdas.has(k)) CATR.celdas.set(k, valor);
+}
 
+// Sube las capas del track por encima de la franja del Catastro, para que el trazado de pendientes se
+// lea siempre sobre el color. `moveLayer` reordena las capas que ya existen: no se duplica nada, así
+// que el color por pendientes, las flechas y el resto siguen funcionando igual.
+function subirTrackSobreCatastro() {
+  try {
+    if (!map.getLayer('catastroFranja')) return;
+    for (const id of ['route-casing', 'route-line', 'arrows', 'hover-pt']) {
+      if (map.getLayer(id)) map.moveLayer(id);
+    }
+  } catch (e) {}
+}
 function limpiarCatastro() {
   CATR.generacion++;
+  CATR.celdas.clear();   // la zona conocida es de esta ruta: al cambiar de ruta se olvida
   if (map.getSource('catastroRuta')) map.getSource('catastroRuta').setData(empty);
 }
-// Clasificación de un punto, con caché para no repetir consultas del mismo sitio
+// Clasificación de un punto, con caché. La respuesta del Catastro identifica la PARCELA completa, así
+// que todos los puntos siguientes que caigan dentro de la misma parcela se resuelven desde la caché
+// (redondeo a 4 decimales ≈ 11 m): de una parcela de varios kilómetros se consulta solo una muestra.
 async function clasificarPunto(lon, lat) {
   const k = claveCatastro(lon, lat);
-  if (CATR.cache.has(k)) return CATR.cache.get(k);
+  if (CATR.cache.has(k)) { CATR.desdeCache++; return CATR.cache.get(k); }
+  // La misma parcela ya consultada cubre esta zona: no hace falta volver a preguntar
+  const heredada = referenciaHeredada(lon, lat);
+  if (heredada) { CATR.cache.set(k, heredada); CATR.desdeCache++; return heredada; }
+  CATR.consultas++;
   const r = await catastroHtml({ lng: lon, lat });
   const info = r && r.estado === 'ok' ? interpretarReferencia((/<b>([^<]+)<\/b>/.exec(r.html) || [])[1] || '') : { tipo: 'ninguna' };
   const valor = { tipo: r && r.estado === 'servicio' ? 'error' : info.tipo, ref: info.ref || '', parcela: info.parcela };
   CATR.cache.set(k, valor);
+  apuntarCeldas(lon, lat, valor);   // la respuesta vale para toda la parcela, no solo para este punto
   return valor;
 }
-// Puntos de muestreo a lo largo de la ruta: cada 30 m (para que los trazos salgan continuos, sin
-// huecos entre muestra y muestra), con un máximo de 900 consultas para no castigar al servicio.
+// Puntos de muestreo a lo largo de la ruta: cada 20 m, hasta 2500. Muestrear fino NO multiplica las
+// consultas: la respuesta del Catastro identifica la parcela entera, así que todos los puntos que
+// caigan en la misma parcela se resuelven con la caché sin volver a preguntar. Con una parcela larga
+// (varios kilómetros) se consulta una vez y el resto sale de la caché; así el trazo sale continuo.
 function muestrasCatastro(pts) {
   const total = pts[pts.length - 1].d;
-  const n = Math.max(2, Math.min(900, Math.ceil(total / 30)));
+  const n = Math.max(2, Math.min(2500, Math.ceil(total / 20)));
   const paso = total / n, out = [];
   let j = 0;
   for (let i = 0; i <= n; i++) {
@@ -2646,6 +2697,7 @@ async function catastroLinea() {
   }
   if (CATR.pidiendo) { CATR.repetir = true; return; }
   CATR.pidiendo = true;
+  CATR.consultas = 0; CATR.desdeCache = 0;   // se cuentan TODAS las consultas de esta ruta, no las de la última pasada
   try {
     do {
       CATR.repetir = false;
@@ -2709,19 +2761,20 @@ async function recorrerCatastro() {
     features.push({ type: 'Feature', properties: { color, lado: 'der' }, geometry: { type: 'LineString', coordinates: desplazarLinea(t.coords, SEPARACION) } });
   }
   map.getSource('catastroRuta').setData({ type: 'FeatureCollection', features });
-  CATR.ultimo = { puntos: res.length, publico, particular, sin, errores, refs: new Set(res.map(r => r.ref).filter(Boolean)).size };
+  CATR.ultimo = { puntos: res.length, publico, particular, sin, errores, consultas: CATR.consultas, refs: new Set(res.map(r => r.ref).filter(Boolean)).size };
   const partes = [];
   if (publico) partes.push(`dominio público ${publico}/${res.length}`);
   if (particular) partes.push(`parcelas particulares ${particular}/${res.length}`);
   if (sin) partes.push(`sin referencia ${sin}`);
-  // Se dice siempre en qué ha quedado, incluidos los casos en los que no hay nada que pintar: así se
-  // distingue «no se ha consultado» de «se ha consultado y no hay tramos que marcar».
+  // Se dice en qué ha quedado y cuántas consultas ha costado: la caché resuelve todos los puntos que
+  // caen en una parcela ya consultada, así que en rutas por pocas parcelas largas son muy pocas.
+  const coste = ` (${CATR.consultas} consulta${CATR.consultas === 1 ? '' : 's'} para ${res.length} puntos)`;
   if (!features.length) {
-    setStatusProgreso(`Catastro en la ruta: ${res.length} puntos consultados y ningún tramo que marcar` +
-      (sin === res.length ? ' (el Catastro no da referencia en ninguno)' : '') + (errores ? ` · ${errores} sin respuesta` : ''));
+    setStatusProgreso(`Catastro en la ruta: ningún tramo que marcar` + coste +
+      (sin === res.length ? ' · el Catastro no da referencia en ninguno' : '') + (errores ? ` · ${errores} sin respuesta` : ''));
     return;
   }
-  if (partes.length) setStatusProgreso(`Catastro sobre la ruta: ${partes.join(' · ')}` + (CATR.ultimo.refs ? ` · ${CATR.ultimo.refs} referencias` : ''));
+  if (partes.length) setStatusProgreso(`Catastro sobre la ruta: ${partes.join(' · ')}` + coste);
 }
 
 async function catastroHtml(ll) {
