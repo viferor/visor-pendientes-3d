@@ -92,15 +92,22 @@ await test('O4', 'El manifiesto de Android declara la apertura de .gpx y el puen
   assert(/android\.intent\.action\.SEND/.test(manifest), 'falta el filtro ACTION_SEND');
   assert(/pathPattern="\.\*\\\\\.gpx"/.test(manifest), 'falta el filtro por extensión .gpx');
   assert(/application\/gpx\+xml/.test(manifest), 'falta el tipo MIME de GPX');
+  // «Abrir con» no ofrecía la app porque los exploradores no declaran bien el tipo del archivo:
+  // hay que aceptar octet-stream (lo que mandan Archivos y Gmail) y, para los proveedores que
+  // mandan un tipo genérico, cualquier MIME. La comprobación real la hace MainActivity.
+  assert((manifest.match(/application\/octet-stream/g) || []).length >= 2, 'ACTION_VIEW debería aceptar también application/octet-stream');
+  assert(/android:mimeType="\*\/\*"/.test(manifest), 'falta el filtro amplio para el «Abrir con» de los proveedores que no declaran el tipo');
   assert(/android:launchMode="singleTask"/.test(manifest), 'se necesita singleTask para recibir el archivo con la app ya abierta');
   const java = fs.readFileSync(path.join(REPO, 'android/app/src/main/java/com/viferor/pendientes3d/MainActivity.java'), 'utf8');
   assert(/addJavascriptInterface\(new PuenteGpx\(\), PUENTE\)/.test(java), 'MainActivity no expone el puente a la web');
   assert(/onNewIntent/.test(java) && /leerIntent/.test(java), 'MainActivity no atiende los intents (arranque y app ya abierta)');
   assert(/endsWith\("\.gpx"\)/.test(java), 'MainActivity no comprueba que el archivo sea un .gpx');
+  assert(/nombreDe\(/.test(java), 'debería leer el nombre real del archivo (OpenableColumns) y no solo la ruta');
+  assert(/leerCabeza\(/.test(java), 'debería mirar solo los primeros bytes antes de leer el archivo entero');
   const web = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
   assert(/window\.AndroidGpx/.test(web), 'la web no consulta el puente de Android');
   assert(/cargarGpxNativo\(\);/.test(web), 'la web no llama a la carga de GPX nativo al arrancar');
-  return { detail: 'manifiesto (VIEW + SEND + extensión), MainActivity (puente, onNewIntent y comprobación .gpx) y web (consulta al arrancar)' };
+  return { detail: 'manifiesto (VIEW con octet-stream y comodín, SEND y extensión .gpx), MainActivity (puente, onNewIntent, nombre real y cabecera) y web (consulta al arrancar)' };
 });
 
 /* ---------------- P: áreas seguras (edge-to-edge de Android 15) ----------------
