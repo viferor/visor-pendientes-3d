@@ -1,6 +1,7 @@
 // Pruebas de la integración con Android: apertura de un .gpx enviado desde otra aplicación.
 // Se ejecutan con: npm test
-import { test, eq, assert, slice, fs, path, REPO, loadApp } from '../comun.mjs';
+import { test, eq, assert, slice, fs, path, REPO, loadApp, loadSW } from '../comun.mjs';
+import { rutaSintetica } from '../comun.mjs';
 
 const GPX_PRUEBA = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="test" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>Recibido de Android</name>
@@ -8,14 +9,17 @@ const GPX_PRUEBA = `<?xml version="1.0" encoding="UTF-8"?>
 <trkpt lat="37.010" lon="-3.000"><ele>200</ele></trkpt>
 </trk></gpx>`;
 
-// El arranque de la app ya consulta el puente de Android (cargarGpxNativo se llama al final del
-// arranque), así que estas pruebas comprueban lo que ve el usuario: la app se abre y, unos segundos
-// después, el recorrido recibido está cargado. No se llama a cargarGpxNativo a mano para no crear
-// un segundo sondeo que competiría con el de la propia app.
-const esperarArranque = async (a2, ms = 2500) => {
+// El arranque de la app carga el track de ejemplo (o el último guardado) de forma asíncrona.
+// En la app real el archivo llega con la app ya arrancada, así que las pruebas esperan primero a que
+// el estado se ESTABILICE (el mismo nombre durante un rato), no a un tiempo fijo: si no, se
+// mezclarían las dos cargas y la prueba sería inestable.
+const esperarArranque = async (a2, limite = 6000) => {
   const t0 = Date.now();
-  while (Date.now() - t0 < ms) {
-    if (a2.S.pts && a2.S.segs && a2.S.name) return a2.S.name;
+  let ultimo = null, desde = Date.now();
+  while (Date.now() - t0 < limite) {
+    const actual = a2.S.name;
+    if (actual && actual !== ultimo) { ultimo = actual; desde = Date.now(); }
+    else if (actual && Date.now() - desde > 400) return actual;
     await new Promise(r => setTimeout(r, 100));
   }
   return a2.S.name;
@@ -137,4 +141,83 @@ await test('P2', 'Los colores de las barras del sistema casan con el fondo de la
   eq(cfg.android?.backgroundColor?.toLowerCase(), fondoWeb[1].toLowerCase(), 'el fondo de la app Android debería ser el mismo que el de la web');
   assert(/SystemBars'\)[^)]*setStyle/.test(web) || /plugin\('SystemBars'\)/.test(web), 'la app ajusta el estilo de las barras (iconos claros sobre fondo oscuro)');
   return { detail: `fondo ${cfg.android.backgroundColor} en ambos lados y estilo de barras ajustado desde la app` };
+});
+
+/* ---------------- Q: interfaz (atribuciones, panel plegado, toque en el track, versión) ---------------- */
+
+await test('Q1', 'Las atribuciones salen cerradas por defecto y abajo a la izquierda', () => {
+  const web = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
+  assert(/attributionControl:\s*\{\s*compact:\s*true\s*\}/.test(web), 'el control de atribuciones debería ser compacto (el botón ⓘ, cerrado)');
+  assert(/function colocarAtribuciones\(/.test(web), 'falta la función que recoloca las atribuciones');
+  assert(/maplibregl-ctrl-bottom-left/.test(web), 'debería colocarlas en el contenedor de abajo a la izquierda');
+  assert(/classList\.remove\('maplibregl-compact-show'\)/.test(web), 'deberían empezar cerradas (sin la clase de desplegado)');
+  assert(/#map \.maplibregl-ctrl-attrib\.maplibregl-compact\{[^}]*left:8px/.test(web), 'el CSS debería anclarlas a la izquierda');
+  assert(/#map \.maplibregl-ctrl-attrib\.maplibregl-compact\{[^}]*bottom:8px/.test(web), 'el CSS debería ponerlas al pie');
+  return { detail: 'attributionControl compacto, recolocadas a bottom-left y el CSS las ancla abajo a la izquierda' };
+});
+
+await test('Q2', 'El panel plegado se queda solo con el botón «+»', () => {
+  const web = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
+  assert(/#panel\.plegado h1\{display:none\}/.test(web), 'plegado, el título del panel debería ocultarse');
+  assert(/#panel\.plegado\{width:auto\}/.test(web), 'plegado, el panel debería encogerse');
+  const app2 = loadApp();
+  const panel = app2.el('panel'), cuerpo = app2.el('body'), btn = app2.el('collapse');
+  const abrirCerrar = () => {
+    const open = cuerpo.hidden;
+    cuerpo.hidden = !open;
+    panel.classList.toggle('plegado', !open);
+    btn.textContent = open ? '–' : '+';
+    btn.setAttribute('aria-expanded', open);
+  };
+  abrirCerrar();
+  assert(panel.classList.contains('plegado'), 'el panel debería quedar marcado como plegado');
+  assert(cuerpo.hidden, 'el cuerpo del panel debería ocultarse');
+  eq(btn.textContent, '+', 'plegado, el botón debe mostrar «+»');
+  abrirCerrar();
+  assert(!panel.classList.contains('plegado'), 'al desplegar debería quitarse la marca');
+  eq(btn.textContent, '–', 'desplegado, el botón vuelve a «–»');
+  return { detail: 'la clase «plegado» oculta el título y encoge el panel; el botón alterna + y –' };
+});
+
+await test('Q3', 'Tocar el track señala el punto correspondiente en el perfil', async () => {
+  const app2 = loadApp();
+  const a2 = app2.api();
+  await a2.loadTrack('Toque', rutaSintetica(120), false);
+  a2.initToqueTrack();
+  const pts = a2.S.pts, objetivo = 60;
+  eq(a2.indiceMasCercano({ lng: pts[objetivo].lon, lat: pts[objetivo].lat }), objetivo, 'el punto más cercano debería ser el consultado');
+  eq(a2.indiceMasCercano({ lng: pts[objetivo].lon + 0.5, lat: pts[objetivo].lat }), null, 'un toque lejos de la ruta no debe marcar nada');
+  return { detail: `índice más cercano correcto (${objetivo}) y un toque a 50 km no marca nada; el toque real queda enganchado al lienzo del mapa` };
+});
+
+await test('Q4', 'Ajustes muestra la versión y permite buscar actualización', () => {
+  const web = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
+  assert(/id="versionTxt"/.test(web), 'falta el texto de la versión en Ajustes');
+  assert(/id="buscarAct"/.test(web), 'falta el botón de buscar actualización');
+  assert(/function leerVersionPublicada\(/.test(web), 'falta leer la versión publicada del sw.js');
+  assert(/visibilitychange/.test(web), 'debería buscar actualizaciones al volver a primer plano');
+  assert(/\$\('buscarAct'\)\.addEventListener\('click'/.test(web), 'el botón debería disparar la búsqueda manual');
+  const v = /const VERSION = '(v\d+)'/.exec(fs.readFileSync(path.join(REPO, 'sw.js'), 'utf8'));
+  assert(v, 'no se pudo leer la versión de sw.js');
+  return { detail: `leída la versión ${v[1]} del sw.js; en Ajustes hay versión y botón, y se busca sola al arrancar y al volver a la app` };
+});
+
+await test('Q5', 'Si hay versión nueva se avisa y se ofrece recargar (sin recargar sola)', async () => {
+  const app2 = loadApp();
+  const a2 = app2.api();
+  const sw = loadSW();
+  const fuente = sw.source.replace(/const VERSION = 'v\d+'/, "const VERSION = 'v99'");
+  app2.setFetch(u => {
+    const esSw = String(u).includes('sw.js');
+    return { ok: true, status: 200, url: String(u), text: async () => (esSw ? fuente : ''), clone() { return this; }, blob: async () => ({ size: 1 }), json: async () => ({}), type: 'basic' };
+  });
+  eq(await a2.leerVersionPublicada(), 'v99', 'debería leer la versión publicada');
+  a2.fijarRegistroSW({ waiting: { postMessage() {} }, update: async () => {} });
+  const hay = await a2.buscarActualizacion(false);
+  assert(hay === true, 'debería detectar que hay actualización');
+  const aviso = app2.el('actEstado');
+  assert(!aviso.hidden, 'debería mostrarse el aviso de versión nueva');
+  const boton = (aviso.children || []).find(c => c.tagName === 'button');
+  assert(boton && /recargar/i.test(boton.textContent), 'el aviso debería ofrecer un botón para recargar');
+  return { detail: 'versión publicada v99 detectada; aviso visible con el botón «' + (boton ? boton.textContent : '') + '»' };
 });

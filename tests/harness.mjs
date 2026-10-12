@@ -365,7 +365,7 @@ export function loadApp({ fetchImpl, imageMode, AndroidGpx } = {}) {
     setTerrain() {}, setSky() {}, resize() {}, easeTo() {}, jumpTo() {}, fitBounds() { return this; },
     getCenter: () => ({ lat: 37.075, lng: -3.38 }), getZoom: () => 13, getBearing: () => 0, getPitch: () => 60,
     getBounds: () => ({ getWest: () => -3.45, getEast: () => -3.30, getSouth: () => 37.0, getNorth: () => 37.15 }),
-    getCanvasContainer: () => canvasProto, unproject: () => ({ lng: -3.38, lat: 37.07 }),
+    getCanvasContainer: () => canvasProto, getCanvas: () => canvasProto, getContainer: () => canvasProto, unproject: () => ({ lng: -3.38, lat: 37.07 }),
     dragPan: { enable() {}, disable() {} }, queryRenderedFeatures: () => []
   };
 
@@ -460,10 +460,13 @@ export function loadApp({ fetchImpl, imageMode, AndroidGpx } = {}) {
   terrainElevations, tileXY, tileUrls, offlineUrlsFor, fmtMB, fmtGrade, fmtInt, fmtTime, avgOf, textOn,
   gradeColor, loadTrack, openFile, fitRoute, updateLabels, clearLabels, saveOffline, deleteOffline,
   updateOfflineButton, map, idxAt, segAt, applyBasemap, applyWmsOverlays, applyProfilePrefs, loadTile, tileCache, gpxFile,
-  queryWms, catastroHtml, queryPoint, loadGpxText, cargarGpxNativo };
+  queryWms, catastroHtml, queryPoint, loadGpxText, cargarGpxNativo, indiceMasCercano, initToqueTrack,
+  leerVersionPublicada, buscarActualizacion, mostrarVersion };
 for (const n of ['WMSOV','MAP_NAMES','offlineBreakdown','offlineTileKind','OFFLINE_VT','OFM_MAXZOOM','TILE_CACHE_MAX','tileCacheSize','tileCacheKeys','stopPrefetch']) {
   try { globalThis.__api[n] = eval(n); } catch (e) { globalThis.__api[n] = undefined; }
 }
+// Permite a las pruebas simular que el service worker tiene una versión esperando a activarse
+globalThis.__api.fijarRegistroSW = reg => { swReg = reg; };
 globalThis.__ready = true;
 `;
 
@@ -488,8 +491,8 @@ globalThis.__ready = true;
 
 /* ---------------- Carga de sw.js ---------------- */
 
-export function loadSW({ fetchImpl } = {}) {
-  const source = fs.readFileSync(path.join(REPO, 'sw.js'), 'utf8');
+export function loadSW({ fetchImpl, fuente } = {}) {
+  const source = fuente || fs.readFileSync(path.join(REPO, 'sw.js'), 'utf8');
   const listeners = {};
   const deleted = [];
   const caches = makeCacheStorage();

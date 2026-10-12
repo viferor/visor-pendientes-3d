@@ -48,6 +48,11 @@ body.no-profile{--profile-h:0px}
 #panel h1{font:700 22px/1 var(--display);letter-spacing:.02em;margin:0;text-transform:uppercase;flex:1}
 #panel h1 span{color:var(--paint)}
 #collapse{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;width:30px;height:30px;cursor:pointer;font:600 16px/1 var(--body)}
+/* Panel plegado: se queda solo el botón «+», sin el título, para no tapar el mapa */
+#panel.plegado header{padding:0;border-bottom:0;justify-content:flex-end}
+#panel.plegado h1{display:none}
+#panel.plegado{width:auto}
+#panel.plegado #collapse{margin:6px}
 #body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:14px;overflow:auto}
 #trackName{font:600 15px/1.25 var(--body);margin:0;text-wrap:balance}
 #status{font-size:12.5px;color:var(--muted);margin:2px 0 0;min-height:1em}
@@ -127,6 +132,8 @@ input[type=range]{accent-color:var(--paint)}
 #tip{position:absolute;top:8px;pointer-events:none;background:var(--panel-solid);border:1px solid var(--line);border-radius:6px;
   padding:5px 8px;font:500 12.5px/1.3 var(--body);white-space:nowrap;font-variant-numeric:tabular-nums}
 #tip b{font-family:var(--display);font-size:15px}
+/* Punto señalado sobre el track (al tocarlo en el mapa o al marcarlo en el perfil) */
+.punto-track{width:16px;height:16px;border-radius:50%;background:#fff;border:3px solid #111;box-shadow:0 1px 6px rgba(0,0,0,.6)}
 
 /* Etiquetas de pendiente */
 .g{font:700 13px/1 var(--display);padding:3px 6px 2px;border-radius:4px;background:var(--c);
@@ -190,7 +197,13 @@ body.layout .movable *{pointer-events:none}
   border:3px dashed var(--paint);font:700 32px var(--display);text-transform:uppercase;color:var(--paint)}
 
 .maplibregl-ctrl-attrib{font-size:10px}
-.maplibregl-ctrl-bottom-right,.maplibregl-ctrl-bottom-left{bottom:calc(var(--profile-h) + var(--safe-area-inset-bottom, env(safe-area-inset-bottom,0px)))}
+/* Atribuciones (Esri, Maxar, OpenStreetMap…): cerradas por defecto y abajo a la izquierda, justo
+   encima del perfil. Se quedan en modo «compacto»: el botón ⓘ y, al pulsarlo, el texto. */
+#map .maplibregl-ctrl-attrib.maplibregl-compact{position:absolute;right:auto;left:8px;bottom:8px;
+  margin:0;background:rgba(13,18,16,.72);border-radius:6px}
+#map .maplibregl-ctrl-attrib.maplibregl-compact-show{padding:0 6px 0 22px;background:rgba(13,18,16,.88)}
+#map .maplibregl-ctrl-attrib .maplibregl-ctrl-attrib-inner{color:#dfe7df}
+.maplibregl-ctrl-bottom-left,.maplibregl-ctrl-bottom-right{bottom:calc(var(--profile-h) + var(--safe-area-inset-bottom, env(safe-area-inset-bottom,0px)))}
 .maplibregl-ctrl-top-right{top:var(--safe-area-inset-top, env(safe-area-inset-top,0px));right:var(--safe-area-inset-right, env(safe-area-inset-right,0px))}
 
 @media (max-width:640px){
@@ -207,7 +220,7 @@ body.layout .movable *{pointer-events:none}
 
 <aside id="panel" aria-label="Controles">
   <header>
-    <h1>Pendientes <span>3D</span></h1>
+    <h1 id="panelTitle">Pendientes <span>3D</span></h1>
     <button id="collapse" aria-expanded="true" aria-controls="body" title="Plegar panel">–</button>
   </header>
   <div id="body">
@@ -335,6 +348,11 @@ body.layout .movable *{pointer-events:none}
           <label for="profileAlpha">Opacidad</label>
           <input id="profileAlpha" type="range" min="0" max="100" step="5" value="86">
         </div>
+        <div class="row" style="align-items:center;gap:8px">
+          <span class="hint" id="versionTxt" style="flex:1">Versión —</span>
+          <button class="btn" id="buscarAct" type="button" style="flex:none">Buscar actualización</button>
+        </div>
+        <p class="hint" id="actEstado" hidden></p>
       </div>
     </details>
 
@@ -527,7 +545,9 @@ const map = new maplibregl.Map({
     terrain: { source: 'dem', exaggeration: prefs.exag }
   },
   center: [-3.38, 37.075], zoom: 12.5, pitch: 62, bearing: -30, maxPitch: 85,
-  maxTileCacheSize: 1500, fadeDuration: 0, refreshExpiredTiles: false
+  maxTileCacheSize: 1500, fadeDuration: 0, refreshExpiredTiles: false,
+  // El botón de atribuciones (ⓘ) empieza cerrado: así no tapa el mapa hasta que se pulsa
+  attributionControl: { compact: true }
 });
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
 class NativeFullscreen {
@@ -550,11 +570,21 @@ class NativeFullscreen {
   }
   onRemove() { this.box.remove(); }
 }
+// Deja el control de atribuciones en modo compacto (el ⓘ) y lo coloca en el contenedor de abajo a
+// la izquierda; el CSS lo pone encima del perfil. Si no hay contenedor, se deja donde esté.
+function colocarAtribuciones() {
+  const el = document.querySelector('.maplibregl-ctrl-attrib');
+  if (!el) return;
+  el.classList.remove('maplibregl-compact-show');
+  const destino = document.querySelector('.maplibregl-ctrl-bottom-left');
+  if (destino && el.parentElement !== destino) destino.appendChild(el);
+}
 map.addControl(NATIVE ? new NativeFullscreen() : new maplibregl.FullscreenControl({ container: document.body }), 'top-right');
 map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
 
 const empty = { type: 'FeatureCollection', features: [] };
 const mapReady = new Promise(res => map.on('load', () => {
+  colocarAtribuciones();
   try { map.setSky({ 'sky-color': '#7fb2e6', 'horizon-color': '#dbe8f2', 'fog-color': '#dbe8f2', 'sky-horizon-blend': 0.5, 'horizon-fog-blend': 0.6, 'fog-ground-blend': 0.85 }); } catch (e) {}
   map.addSource('route', { type: 'geojson', data: empty });
   map.addSource('hover', { type: 'geojson', data: empty });
@@ -595,6 +625,16 @@ const mapReady = new Promise(res => map.on('load', () => {
     } });
   map.addLayer({ id: 'hover-pt', type: 'circle', source: 'hover',
     paint: { 'circle-radius': 7, 'circle-color': '#fff', 'circle-stroke-width': 3, 'circle-stroke-color': '#111' } });
+  marcarEnTrack = (ll, quieto) => {   // ya está el mapa listo: se puede mover el punto
+    if (!S.pts || !S.pts.length) return null;
+    const i = indiceMasCercano(ll);
+    if (i == null) return null;
+    S.sel = i;
+    PUNTO_TRACK.setLngLat([S.pts[i].lon, S.pts[i].lat]).addTo(map);
+    drawMarker(i, true);
+    if (!quieto) flyToIdx(i, true);
+    return i;
+  };
   res();
 }));
 
@@ -1080,6 +1120,26 @@ function idxAt(d) {
 function segAt(i) { return S.segs.find(g => i >= g.i0 && i <= g.i1) || S.segs[S.segs.length - 1]; }
 
 // Punto marcado en el perfil (S.sel): queda fijo al soltar; el paso del ratón solo lo muestra
+// --- Toque sobre el track: señala en el perfil el punto que has tocado ---
+// (el sentido contrario, mover el dedo por el perfil, mueve el punto en el mapa)
+let marcarEnTrack = null;   // se completa cuando el mapa está listo
+let PUNTO_TRACK = null;
+
+/** Índice del punto del track más cercano a una posición geográfica. */
+function indiceMasCercano(ll) {
+  const pts = S.pts;
+  if (!pts || !pts.length) return null;
+  const lon = ll.lng != null ? ll.lng : ll[0], lat = ll.lat != null ? ll.lat : ll[1];
+  let mejor = 0, mejorD = Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const dx = (pts[i].lon - lon) * Math.cos(lat * Math.PI / 180), dy = pts[i].lat - lat;
+    const d = dx * dx + dy * dy;
+    if (d < mejorD) { mejorD = d; mejor = i; }
+  }
+  // Si el punto tocado está muy lejos de la ruta, no se marca nada (evita marcar un punto absurdo)
+  if (Math.sqrt(mejorD) * 111320 > 4000) return null;
+  return mejor;
+}
 function idxFromX(clientX) {
   const r = over.getBoundingClientRect();
   const x = Math.min(Math.max(clientX - r.left, P.pad.l), P.pad.l + P.W);
@@ -1126,7 +1186,27 @@ function hoverOut() {
   if (map.getSource('hover')) map.getSource('hover').setData(empty);
   if (!PLAY.on) $('live').hidden = true;
 }
-function clearSelection() { S.sel = null; hoverOut(); }
+function clearSelection() { S.sel = null; hoverOut(); if (PUNTO_TRACK) PUNTO_TRACK.remove(); }
+
+/* ---------- Toque sobre el track: se señala en el perfil ---------- */
+function initToqueTrack() {
+  PUNTO_TRACK = new maplibregl.Marker({ element: (() => {
+    const el = document.createElement('div'); el.className = 'punto-track'; return el;
+  })(), anchor: 'center' });
+  const lienzo = map.getCanvas();
+  let inicioToque = null;
+  lienzo.addEventListener('pointerdown', e => { inicioToque = { x: e.clientX, y: e.clientY, t: Date.now() }; });
+  lienzo.addEventListener('pointerup', e => {
+    const ini = inicioToque; inicioToque = null;
+    if (!ini || D.active || !S.pts) return;
+    // Solo si ha sido un toque (no un arrastre para mover el mapa) y con la ruta a la vista
+    if (Math.hypot(e.clientX - ini.x, e.clientY - ini.y) > 8 || Date.now() - ini.t > 700) return;
+    const rect = map.getCanvas().getBoundingClientRect();
+    const ll = map.unproject([e.clientX - rect.left, e.clientY - rect.top]);
+    if (marcarEnTrack) marcarEnTrack(ll, false);
+  });
+}
+
 
 // Rumbo de la marcha en el punto i (de 80 m antes a 200 m después)
 function headingAt(i) {
@@ -1610,6 +1690,7 @@ mapReady.then(() => {
   makeMovable(document.querySelector('.maplibregl-ctrl-top-right'), 'mapButtons');
   makeMovable($('player'), 'player');
   makeMovable($('live'), 'live');
+  initToqueTrack();
 });
 addEventListener('resize', () => MOVABLE.forEach(placeMovable));
 function setLayoutMode(on) {
@@ -2315,8 +2396,10 @@ for (const btn of [$('modeGpx'), $('modeTer')]) btn.addEventListener('click', ()
 $('collapse').addEventListener('click', () => {
   const open = $('body').hidden;
   $('body').hidden = !open;
+  $('panel').classList.toggle('plegado', !open);
   $('collapse').textContent = open ? '–' : '+';
   $('collapse').setAttribute('aria-expanded', open);
+  $('collapse').title = open ? 'Plegar panel' : 'Mostrar controles';
 });
 if (window.innerWidth <= 640) $('settings').open = false;
 
@@ -2336,9 +2419,93 @@ if (NATIVE) {
   $('exportGpx').textContent = 'Guardar GPX';
   document.querySelector('#body .hint:last-child').textContent = 'Arrastra con dos dedos para girar e inclinar la vista.';
 }
+/* ---------- Versión y actualizaciones ---------- */
+// El número de versión es el de la caché del service worker (v27, v28…): es el que cambia cuando hay
+// algo nuevo que descargar. Se muestra en Ajustes, se puede buscar a mano y además se busca sola al
+// arrancar y cada vez que la app vuelve a primer plano. Si hay algo nuevo, se avisa con un botón para
+// recargar: no se recarga sola, para no interrumpir lo que estés haciendo.
+let swReg = null;
+let versionPublicada = null;
+let versionCargada = null;
+let avisoActualizacion = false;
+function mostrarVersion() {
+  $('versionTxt').textContent = 'Versión ' + (versionCargada || versionPublicada || '—') +
+    (versionPublicada && versionCargada && versionPublicada !== versionCargada ? ' (hay ' + versionPublicada + ')' : '');
+}
+let estadoActTimer = null;
+function estadoAct(msg, error) {
+  const el = $('actEstado');
+  el.textContent = msg || '';
+  el.hidden = !msg;
+  el.classList.toggle('err', !!error);
+  clearTimeout(estadoActTimer);
+  if (msg && !avisoActualizacion) estadoActTimer = setTimeout(() => { el.hidden = true; }, 8000);
+}
+// Lee la versión que hay publicada en el servidor (no la de la caché): así se sabe si hay algo nuevo
+async function leerVersionPublicada() {
+  try {
+    const r = await fetch('sw.js?v=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return null;
+    return (/const VERSION = '([^']+)'/.exec(await r.text()) || [])[1] || null;
+  } catch (e) { return null; }
+}
+async function hayActualizacion() {
+  if (!swReg) return false;
+  if (swReg.waiting) return true;
+  try { await swReg.update(); } catch (e) { return false; }
+  await new Promise(r => setTimeout(r, 1500));
+  return !!swReg.waiting;
+}
+// Avisa de que hay versión nueva y ofrece recargar. No recarga sola: una recarga inesperada puede
+// cortar la descarga de un mapa sin cobertura o perder el punto que estabas mirando.
+function avisarActualizacion() {
+  avisoActualizacion = true;
+  const el = $('actEstado');
+  el.innerHTML = '';
+  el.hidden = false;
+  el.classList.remove('err');
+  const txt = document.createElement('span');
+  txt.textContent = 'Hay una versión nueva' + (versionPublicada ? ' (' + versionPublicada + ')' : '') + ': ';
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = 'btn'; b.textContent = 'Recargar';
+  b.style.cssText = 'padding:3px 8px;font-size:12px;margin-left:2px';
+  b.addEventListener('click', () => {
+    setStatus('Actualizando a la versión ' + (versionPublicada || 'nueva') + '…');
+    location.reload();
+  });
+  el.appendChild(txt); el.appendChild(b);
+  if (swReg && swReg.waiting) { try { swReg.waiting.postMessage({ tipo: 'skipWaiting' }); } catch (e) {} }
+}
+async function buscarActualizacion(manual) {
+  if (manual) estadoAct('Buscando…');
+  versionPublicada = await leerVersionPublicada();
+  mostrarVersion();
+  if (!swReg) {
+    if (manual) estadoAct(versionPublicada ? 'Estás en la versión ' + versionCargada + '. Sin conexión no se puede comprobar si hay otra.' : 'No se pudo comprobar la versión.', !versionPublicada);
+    return false;
+  }
+  const nueva = await hayActualizacion();
+  if (nueva) { avisarActualizacion(); return true; }
+  if (manual) estadoAct('Ya tienes la última versión' + (versionPublicada ? ' (' + versionPublicada + ').' : '.'));
+  return false;
+}
+$('buscarAct').addEventListener('click', () => buscarActualizacion(true));
+
 // También en la app Android cuando carga la web desde Vercel (no desde la copia local)
 if ('serviceWorker' in navigator && location.protocol.startsWith('http') && !(NATIVE && location.hostname === 'localhost')) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  window.addEventListener('load', async () => {
+    try { swReg = await navigator.serviceWorker.register('sw.js'); } catch (e) { return; }
+    // La versión cargada se deduce del nombre de la caché de la app que existe en este navegador
+    try {
+      const nombres = await caches.keys();
+      const mia = nombres.filter(n => n.startsWith('pendientes3d-app-')).sort().pop();
+      versionCargada = mia ? mia.replace('pendientes3d-app-', '') : null;
+      if (!versionCargada) versionCargada = await leerVersionPublicada();
+    } catch (e) { versionCargada = await leerVersionPublicada(); }
+    mostrarVersion();
+    buscarActualizacion(false);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) buscarActualizacion(false); });
+  });
 }
 let installEvt = null;
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; $('install').hidden = false; });
