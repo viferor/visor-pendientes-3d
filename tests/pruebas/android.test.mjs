@@ -431,6 +431,37 @@ await test('T-catastro-2', 'La línea del Catastro se pinta según las respuesta
   return { detail: `${n} consultas al servicio; ${features.length} tramos pintados (${resumen.publico} muestras públicas, ${resumen.particular} particulares, ${resumen.sin} sin referencia)` };
 });
 
+await test('T-catastro-3', 'Al dibujar una ruta también se traza la línea del Catastro', async () => {
+  const app2 = loadApp();
+  const a2 = app2.api();
+  // Se dibuja una ruta por el mismo camino que usa el dedo: puntos y luego refreshDraw()
+  const coords = [];
+  for (let i = 0; i < 30; i++) coords.push([-3.5 + i * 0.0004, 37.2 + i * 0.0003]);
+  app2.api().fijarDibujo([coords]);
+  let n = 0;
+  app2.setFetch(async u => {
+    const s = String(u);
+    if (s.includes('Consulta_RCCOOR')) {
+      n++;
+      const ref = '18072A0010095000';
+      const xml = `<?xml version="1.0"?><consulta><pc1>${ref.slice(0,7)}</pc1><pc2>${ref.slice(7)}</pc2><ldt>P</ldt><cod>16</cod></consulta>`;
+      return { ok: true, status: 200, url: s, text: async () => xml, clone() { return this; }, blob: async () => ({ size: 1 }), json: async () => ({}), type: 'basic' };
+    }
+    return { ok: true, status: 200, url: s, text: async () => '', clone() { return this; }, blob: async () => ({ size: 1 }), json: async () => ({}), type: 'basic' };
+  });
+  a2.CATR.cache.clear();
+  await a2.refreshDraw();
+  await new Promise(r => setTimeout(r, 800));
+  await a2.catastroLinea();
+  await new Promise(r => setTimeout(r, 400));
+  assert(n > 0, 'al dibujar una ruta se debería consultar el Catastro');
+  const datos = app2.mapStub._setData.filter(([id]) => id === 'catastroRuta').pop();
+  assert(datos, 'debería haberse pintado la línea del Catastro al dibujar');
+  const features = (datos[1] && datos[1].features) || [];
+  assert(features.length >= 1, 'debería haber algún tramo pintado: ' + features.length);
+  return { detail: `dibujando una ruta de ${coords.length} puntos: ${n} consultas y ${features.length} tramos pintados en la fuente catastroRuta` };
+});
+
 await test('Q5', 'Si hay versión nueva se avisa y se ofrece recargar (sin recargar sola)', async () => {
   const app2 = loadApp();
   const a2 = app2.api();

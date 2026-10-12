@@ -495,12 +495,20 @@ export function loadApp({ fetchImpl, imageMode, AndroidGpx } = {}) {
   queryWms, catastroHtml, queryPoint, loadGpxText, cargarGpxNativo, indiceMasCercano, initToqueTrack,
   leerVersionPublicada, buscarActualizacion, mostrarVersion, huecosMapa, encuadrarRuta, infoEncuadre,
   speedFromSlider, fijarVelocidad, catastroLinea, limpiarCatastro, interpretarReferencia, muestrasCatastro,
-  desplazarLinea, claveCatastro, CATR, CAT_COLORES };
+  desplazarLinea, claveCatastro, CATR, CAT_COLORES, refreshDraw };
 for (const n of ['WMSOV','MAP_NAMES','offlineBreakdown','offlineTileKind','OFFLINE_VT','OFM_MAXZOOM','TILE_CACHE_MAX','tileCacheSize','tileCacheKeys','stopPrefetch','repetirEncuadreSiToca','revisarEncuadrePendiente']) {
   try { globalThis.__api[n] = eval(n); } catch (e) { globalThis.__api[n] = undefined; }
 }
 // Permite a las pruebas simular que el service worker tiene una versión esperando a activarse
 globalThis.__api.fijarRegistroSW = reg => { swReg = reg; };
+// Permite a las pruebas preparar el estado de dibujo (una ruta ya trazada) y llamar a refreshDraw
+globalThis.__api.fijarDibujo = (legs, wps) => {
+  D.active = true;
+  D.wps = wps || [{ m: { remove() {} } }];   // cada punto lleva un marcador en el mapa real
+  D.legs = legs;
+  D.legReq = legs.map(() => null);
+  D.fixed = legs.map(() => true);
+};
 globalThis.__ready = true;
 `;
 
