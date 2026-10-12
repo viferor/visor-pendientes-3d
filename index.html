@@ -48,11 +48,11 @@ body.no-profile{--profile-h:0px}
 #panel h1{font:700 22px/1 var(--display);letter-spacing:.02em;margin:0;text-transform:uppercase;flex:1}
 #panel h1 span{color:var(--paint)}
 #collapse{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;width:30px;height:30px;cursor:pointer;font:600 16px/1 var(--body)}
-/* Panel plegado: se queda solo el botón «+», sin el título, para no tapar el mapa */
+/* Panel plegado: se queda solo el botón «+», sin el título ni el recuadro, para no tapar el mapa */
+#panel.plegado{width:auto;background:none;backdrop-filter:none;-webkit-backdrop-filter:none;border-color:transparent;overflow:visible}
 #panel.plegado header{padding:0;border-bottom:0;justify-content:flex-end}
 #panel.plegado h1{display:none}
-#panel.plegado{width:auto}
-#panel.plegado #collapse{margin:6px}
+#panel.plegado #collapse{margin:6px;background:var(--panel);border-color:var(--line)}
 #body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:14px;overflow:auto}
 #trackName{font:600 15px/1.25 var(--body);margin:0;text-wrap:balance}
 #status{font-size:12.5px;color:var(--muted);margin:2px 0 0;min-height:1em}
@@ -353,6 +353,9 @@ body.layout .movable *{pointer-events:none}
           <button class="btn" id="buscarAct" type="button" style="flex:none">Buscar actualización</button>
         </div>
         <p class="hint" id="actEstado" hidden></p>
+        <div class="row">
+          <button class="btn" id="infoEncuadre" type="button">Info de encuadre</button>
+        </div>
       </div>
     </details>
 
@@ -1046,6 +1049,7 @@ function updateLabels() {
 map.on('moveend', () => {
   if (PLAY.on) { const t = performance.now(); if (t - PLAY.labelsAt < 700) return; PLAY.labelsAt = t; }
   updateLabels();
+  revisarEncuadrePendiente();
 });
 
 /* ---------- Perfil ---------- */
@@ -1722,6 +1726,8 @@ for (const ev of ['dragstart', 'rotatestart', 'pitchstart', 'zoomstart'])
 over.addEventListener('pointerdown', () => { if (PLAY.on) pausePlay(); }, true);
 
 /* ---------- Cámara ---------- */
+// Encuadre en curso: si el usuario toca el mapa antes de que termine, se repite sin animación.
+let encuadrePendiente = null, encuadreTimer = null;
 function fitRoute(animate = true) {
   if (!S.pts) return;
   const b = new maplibregl.LngLatBounds();
@@ -1732,6 +1738,53 @@ function fitRoute(animate = true) {
     padding: { top: wide ? 70 : panel.bottom + 20, bottom: prof.height + 50, left: wide ? panel.right + 40 : 30, right: 70 },
     pitch: 60, bearing: map.getBearing(), duration: animate ? 1600 : 0, maxZoom: 16
   });
+  // Se apunta el encuadre para poder comprobarlo desde Ajustes (botón «Info de encuadre») y en las
+  // pruebas: así se distingue «no se ha pedido encuadrar» de «se pidió y la vista no se movió».
+  const lons = S.pts.map(p => p.lon), lats = S.pts.map(p => p.lat);
+  S.ultimoEncuadre = {
+    puntos: S.pts.length,
+    centro: [+((Math.min(...lons) + Math.max(...lons)) / 2).toFixed(4), +((Math.min(...lats) + Math.max(...lats)) / 2).toFixed(4)],
+    caja: [+Math.min(...lons).toFixed(4), +Math.min(...lats).toFixed(4), +Math.max(...lons).toFixed(4), +Math.max(...lats).toFixed(4)],
+    animado: !!animate, cuando: Date.now()
+  };
+  // En móvil la animación puede quedarse a medias (la barra del navegador cambia de tamaño al cargar
+  // el archivo y MapLibre cancela el vuelo, o el usuario toca el mapa). Si eso pasa, se vuelve a
+  // encuadrar sin animación en cuanto se toque el mapa o la pantalla cambie de tamaño.
+  if (animate) {
+    const caja = S.ultimoEncuadre.caja;
+    encuadrePendiente = { caja, hasta: Date.now() + 4000 };
+    try { clearTimeout(encuadreTimer); } catch (e) {}
+    encuadreTimer = setTimeout(() => { encuadrePendiente = null; }, 4000);
+  }
+}
+function repetirEncuadreSiToca() {
+  if (!encuadrePendiente || Date.now() > encuadrePendiente.hasta) { encuadrePendiente = null; return; }
+  encuadrePendiente = null;
+  clearTimeout(encuadreTimer);
+  const b = new maplibregl.LngLatBounds();
+  S.pts.forEach(p => b.extend([p.lon, p.lat]));
+  const panel = $('panel').getBoundingClientRect(), prof = $('profile').getBoundingClientRect();
+  const wide = window.innerWidth > 640;
+  map.fitBounds(b, {
+    padding: { top: wide ? 70 : panel.bottom + 20, bottom: prof.height + 50, left: wide ? panel.right + 40 : 30, right: 70 },
+    pitch: 60, bearing: map.getBearing(), duration: 0, maxZoom: 16
+  });
+}
+// Si la animación del encuadre se corta (pasa en el móvil), `moveend` llega antes de tiempo: si la
+// vista no se parece a lo pedido, se encuadra otra vez sin animación. La comparación es por centro y
+// tamaño (no por «contiene», que engancharía a MapLibre por los redondeos de los límites de tesela).
+function revisarEncuadrePendiente() {
+  if (!encuadrePendiente || Date.now() > encuadrePendiente.hasta) { encuadrePendiente = null; return; }
+  const caja = encuadrePendiente.caja;
+  const centro = [(caja[0] + caja[2]) / 2, (caja[1] + caja[3]) / 2];
+  const ancho = Math.max(1e-9, caja[2] - caja[0]), alto = Math.max(1e-9, caja[3] - caja[1]);
+  const b = map.getBounds();
+  const cx = (b.getWest() + b.getEast()) / 2, cy = (b.getSouth() + b.getNorth()) / 2;
+  const desplazado = Math.abs(cx - centro[0]) > Math.max(ancho * 0.5, 0.002) ||
+                     Math.abs(cy - centro[1]) > Math.max(alto * 0.5, 0.002);
+  const otroTamano = 1 / ancho > (b.getEast() - b.getWest()) * 4 || 1 / alto > (b.getNorth() - b.getSouth()) * 4;
+  if (!desplazado && !otroTamano) { encuadrePendiente = null; return; }
+  repetirEncuadreSiToca();
 }
 
 /* ---------- Carga de un GPX ---------- */
@@ -2412,6 +2465,10 @@ window.addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); 
 window.addEventListener('drop', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $('drop').hidden = true; openFile(e.dataTransfer.files[0]); });
 
 let rz; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(drawProfile, 120); });
+// Al tocar el mapa, si el encuadre de la ruta se quedó a medias (típico en móvil), se repite sin
+// animación para que la vista acabe mostrando el recorrido.
+map.on('touchstart', repetirEncuadreSiToca);
+map.on('mousedown', repetirEncuadreSiToca);
 document.addEventListener('fullscreenchange', () => setTimeout(() => { map.resize(); drawProfile(); }, 150));
 
 /* ---------- PWA ---------- */
@@ -2491,6 +2548,13 @@ async function buscarActualizacion(manual) {
   return false;
 }
 $('buscarAct').addEventListener('click', () => buscarActualizacion(true));
+// Diagnóstico: dice si se ha pedido encuadrar la ruta y con qué centro y caja. Sirve para saber si
+// el problema de «no se mueve la vista» está en la petición de encuadre o en el mapa.
+$('infoEncuadre').addEventListener('click', () => {
+  const e = S.ultimoEncuadre;
+  if (!e) { estadoAct('Todavía no se ha encuadrado ninguna ruta.', true); return; }
+  estadoAct(`Encuadre: ${e.puntos} puntos, centro ${e.centro[0]}, ${e.centro[1]} · caja ${e.caja.join(' / ')} · animado: ${e.animado ? 'sí' : 'no'}`);
+});
 
 // También en la app Android cuando carga la web desde Vercel (no desde la copia local)
 if ('serviceWorker' in navigator && location.protocol.startsWith('http') && !(NATIVE && location.hostname === 'localhost')) {

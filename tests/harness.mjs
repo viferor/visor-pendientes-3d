@@ -462,7 +462,7 @@ export function loadApp({ fetchImpl, imageMode, AndroidGpx } = {}) {
   updateOfflineButton, map, idxAt, segAt, applyBasemap, applyWmsOverlays, applyProfilePrefs, loadTile, tileCache, gpxFile,
   queryWms, catastroHtml, queryPoint, loadGpxText, cargarGpxNativo, indiceMasCercano, initToqueTrack,
   leerVersionPublicada, buscarActualizacion, mostrarVersion };
-for (const n of ['WMSOV','MAP_NAMES','offlineBreakdown','offlineTileKind','OFFLINE_VT','OFM_MAXZOOM','TILE_CACHE_MAX','tileCacheSize','tileCacheKeys','stopPrefetch']) {
+for (const n of ['WMSOV','MAP_NAMES','offlineBreakdown','offlineTileKind','OFFLINE_VT','OFM_MAXZOOM','TILE_CACHE_MAX','tileCacheSize','tileCacheKeys','stopPrefetch','repetirEncuadreSiToca','revisarEncuadrePendiente']) {
   try { globalThis.__api[n] = eval(n); } catch (e) { globalThis.__api[n] = undefined; }
 }
 // Permite a las pruebas simular que el service worker tiene una versión esperando a activarse
