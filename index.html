@@ -682,29 +682,18 @@ const mapReady = new Promise(res => map.on('load', () => {
     } });
   map.addLayer({ id: 'hover-pt', type: 'circle', source: 'hover',
     paint: { 'circle-radius': 7, 'circle-color': '#fff', 'circle-stroke-width': 3, 'circle-stroke-color': '#111' } });
-  // Catastro sobre la ruta, en este orden:
-  //  1. Una franja de color BAJO el trazado, centrada en la ruta y más ancha que él (8-16 px): es lo que
-  //     identifica el tramo, verde si es dominio público y rojo si es parcela particular.
-  //  2. El trazo del track POR ENCIMA (route-casing y route-line se suben aquí con moveLayer, sin
-  //     duplicarlos: su color lo calcula el análisis de pendientes).
-  //  3. Los dos filos finos a cada lado, para que el límite del tramo quede marcado.
+  // Reborde del Catastro: se dibuja DEBAJO del track, con LA MISMA geometría que el track (los mismos
+  // segmentos), solo que más ancho y con los extremos y uniones redondeados. Así sobresale unos píxeles
+  // por los dos lados y rodea el trazado: verde si el tramo va por dominio público y rojo si va por
+  // parcela particular. El track (pendientes) va por encima y manda siempre: el reborde solo lo delimita.
   // OJO: la fuente se llama 'catastroRuta' y no 'catastro', que ya es la capa raster de parcelas.
   map.addSource('catastroRuta', { type: 'geojson', data: empty });
-  const franjaCat = ['interpolate', ['linear'], ['zoom'], 10, 8, 14, 12, 17, 16];
-  const filoCat = ['interpolate', ['linear'], ['zoom'], 10, 1.4, 14, 2, 17, 2.6];
-  // 1) Franja de fondo
+  const anchoCat = ['interpolate', ['linear'], ['zoom'], 9, 13, 13, 17, 16, 22];
   map.addLayer({ id: 'catastroFranja', type: 'line', source: 'catastroRuta',
-    layout: { 'line-cap': 'butt', 'line-join': 'round' },
-    paint: { 'line-color': ['get', 'color'], 'line-width': franjaCat, 'line-opacity': 0.55 } });
-  // 2) El track por encima de la franja
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': ['get', 'color'], 'line-width': anchoCat, 'line-opacity': 0.95 } });
+  // El track, encima del reborde
   subirTrackSobreCatastro();
-  // 3) Filos finos a cada lado
-  map.addLayer({ id: 'catastroIzq', type: 'line', source: 'catastroRuta',
-    layout: { 'line-cap': 'round', 'line-join': 'round' },
-    paint: { 'line-color': ['get', 'color'], 'line-width': filoCat, 'line-opacity': 0.95 } });
-  map.addLayer({ id: 'catastroDer', type: 'line', source: 'catastroRuta',
-    layout: { 'line-cap': 'round', 'line-join': 'round' },
-    paint: { 'line-color': ['get', 'color'], 'line-width': filoCat, 'line-opacity': 0.95 } });
   // Si MapLibre falla al mover la cámara (o cualquier otra cosa), que se vea en el estado en vez de
   // quedarse en silencio: es lo que impedía saber por qué no se encuadraba en el móvil.
   map.on('error', e => {
@@ -1048,6 +1037,9 @@ function clearTrack() {
   S.pts = S.segs = null; S.sel = null;
   if (map.getSource('route')) map.getSource('route').setData(empty);
   if (map.getSource('arrows')) map.getSource('arrows').setData(empty);
+  // El reborde del Catastro es del recorrido: si se borra el recorrido, se borra también. Si no, al
+  // darle a «Borrar» quedaba el color puesto sobre un trazado que ya no existe.
+  limpiarCatastro();
   PLAY.x = 0; showPlayer();
   clearLabels();
   $('stats').innerHTML = '';
@@ -2660,8 +2652,9 @@ function muestrasCatastro(pts) {
     while (j < pts.length - 1 && pts[j + 1].d < d) j++;
     const a = pts[j], b = pts[Math.min(j + 1, pts.length - 1)];
     const span = b.d - a.d, f = span > 0 ? (d - a.d) / span : 0;
-    out.push({ lon: a.lon + (b.lon - a.lon) * f, lat: a.lat + (b.lat - a.lat) * f });
+    out.push({ lon: a.lon + (b.lon - a.lon) * f, lat: a.lat + (b.lat - a.lat) * f, d });
   }
+  out.d0 = 0; out.d1 = total;
   return out;
 }
 // Desplaza una línea unos metros a su derecha (paralela), en grados
@@ -2690,8 +2683,8 @@ async function catastroLinea() {
     return;
   }
   if (!S.pts || S.pts.length < 2 || !map.getSource('catastroRuta')) { limpiarCatastro(); return; }
-  if (!map.getLayer('catastroIzq') || !map.getLayer('catastroDer')) {
-    // No debería pasar (las capas se crean al cargar el mapa), pero si pasa conviene saberlo
+  if (!map.getLayer('catastroFranja')) {
+    // No debería pasar (la capa se crea al cargar el mapa), pero si pasa conviene saberlo
     setStatusProgreso('No se puede pintar el tipo de parcela en la ruta (falta la capa del mapa).', 9000);
     return;
   }
@@ -2721,50 +2714,36 @@ async function recorrerCatastro() {
     if (errores >= 3 && errores === res.length) break;
   }
   if (gen !== CATR.generacion) return;
+  const SEGS = S.segs || [];
   const features = [];
   let publico = 0, particular = 0, sin = 0;
-  // El color se calcula por puntos y luego se dibuja dos veces, desplazado a cada lado: así los dos
-  // trazos son continuos a lo largo de toda la ruta y solo cambian de color cuando cambia el tipo de
-  // parcela. Con un solo desplazamiento se vería un trazo nada más, y lo que se pide son dos.
-  const tipos = [];
-  for (let i = 0; i < res.length; i++) {
-    const tipo = res[i].tipo;
-    tipos.push(tipo);
+  // El reborde reutiliza EXACTAMENTE la geometría de los segmentos del track: así va pegado al trazado
+  // por definición (mismos puntos, mismos vértices) y solo tiene que cambiar de color. Cada segmento se
+  // colorea con el tipo de parcela que hay en su punto medio.
+  for (const g of SEGS) {
+    const medio = Math.floor((g.i0 + g.i1) / 2);
+    let tipo = 'ninguna';
+    if (res.length) {
+      // Índice de la muestra más cercana a la distancia del punto medio del segmento
+      const dMedio = S.pts[medio].d;
+      let j = 0;
+      while (j < res.length - 1 && muestras[j + 1].d < dMedio) j++;
+      tipo = res[j].tipo;
+    }
     if (tipo === 'publico') publico++;
     else if (tipo === 'particular') particular++;
     else sin++;
-  }
-  // Tramos: cada vez que cambia el tipo (o falta), se empieza un tramo nuevo. Un tramo de un solo
-  // punto se alarga con el anterior para que el cambio de color se vea aunque la parcela sea corta.
-  const tramos = [];
-  let actual = null;
-  const cerrar = () => { if (actual && actual.coords.length >= 2) tramos.push(actual); actual = null; };
-  for (let i = 0; i < res.length; i++) {
-    const tipo = tipos[i];
-    if (tipo === 'publico' || tipo === 'particular') {
-      if (!actual || actual.tipo !== tipo) {
-        const inicio = i > 0 ? [[muestras[i - 1].lon, muestras[i - 1].lat]] : [];
-        cerrar();
-        actual = { tipo, coords: inicio.concat([[muestras[i].lon, muestras[i].lat]]) };
-      } else {
-        actual.coords.push([muestras[i].lon, muestras[i].lat]);
-      }
-    } else cerrar();
-  }
-  cerrar();
-  // Se separan lo justo para que se distingan del trazado de pendientes y entre sí: pegados al track,
-  // pero sin llegar a confundirse con él.
-  const SEPARACION = 4;   // metros a cada lado del eje del recorrido
-  for (const t of tramos) {
-    const color = CAT_COLORES[t.tipo];
-    features.push({ type: 'Feature', properties: { color, lado: 'izq' }, geometry: { type: 'LineString', coordinates: desplazarLinea(t.coords, -SEPARACION) } });
-    features.push({ type: 'Feature', properties: { color, lado: 'der' }, geometry: { type: 'LineString', coordinates: desplazarLinea(t.coords, SEPARACION) } });
+    if (tipo !== 'publico' && tipo !== 'particular') continue;
+    features.push({
+      type: 'Feature', properties: { color: CAT_COLORES[tipo] },
+      geometry: { type: 'LineString', coordinates: S.pts.slice(g.i0, g.i1 + 1).map(p => [p.lon, p.lat]) }
+    });
   }
   map.getSource('catastroRuta').setData({ type: 'FeatureCollection', features });
-  CATR.ultimo = { puntos: res.length, publico, particular, sin, errores, consultas: CATR.consultas, refs: new Set(res.map(r => r.ref).filter(Boolean)).size };
+  CATR.ultimo = { puntos: res.length, publico, particular, sin, errores, consultas: CATR.consultas, refs: new Set(res.map(r => r.ref).filter(Boolean)).size, segmentos: SEGS.length };
   const partes = [];
-  if (publico) partes.push(`dominio público ${publico}/${res.length}`);
-  if (particular) partes.push(`parcelas particulares ${particular}/${res.length}`);
+  if (publico) partes.push(`dominio público ${publico} de ${SEGS.length} tramos`);
+  if (particular) partes.push(`parcelas particulares ${particular} de ${SEGS.length} tramos`);
   if (sin) partes.push(`sin referencia ${sin}`);
   // Se dice en qué ha quedado y cuántas consultas ha costado: la caché resuelve todos los puntos que
   // caen en una parcela ya consultada, así que en rutas por pocas parcelas largas son muy pocas.

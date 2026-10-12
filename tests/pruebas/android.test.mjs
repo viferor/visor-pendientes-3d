@@ -355,14 +355,19 @@ await test('S-velocidad', 'El reproductor llega a 90x y 120x', () => {
 const refCat = (poligono, parcela) =>
   '18072A' + String(poligono).padStart(3, '0') + String(parcela).padStart(5, '0');
 
-await test('T-catastro', 'La línea paralela marca público en verde y particular en rojo', async () => {
+await test('T-catastro', 'El reborde del Catastro marca público en verde y particular en rojo', async () => {
   const web = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
-  // La fuente de la línea no puede llamarse 'catastro': ese nombre ya es la capa raster de parcelas,
+  // La fuente del reborde no puede llamarse 'catastro': ese nombre ya es la capa raster de parcelas,
   // y reutilizarlo rompía las parcelas y su guardado sin cobertura.
-  assert(/addSource\('catastroRuta'/.test(web), 'la línea debería usar la fuente «catastroRuta»');
+  assert(/addSource\('catastroRuta'/.test(web), 'el reborde debería usar la fuente «catastroRuta»');
   assert(!/addSource\('catastro', \{ type: 'geojson'/.test(web), 'no se puede reutilizar el nombre «catastro» (es la capa raster de parcelas)');
   assert(/CAT_COLORES = \{ publico: '#2ecc71', particular: '#e74c3c' \}/.test(web), 'faltan los colores verde (público) y rojo (particular)');
-  assert(/id="ovCatRuta"/.test(web), 'falta el interruptor de la línea del Catastro en Ajustes');
+  assert(/id="ovCatRuta"/.test(web), 'falta el interruptor del reborde del Catastro en Ajustes');
+  // El reborde se dibuja antes que el track y el track se sube encima
+  assert(/id: 'catastroFranja'[\s\S]{0,300}subirTrackSobreCatastro\(\)/.test(web), 'el reborde debería crearse antes de subir el track encima');
+  assert(/function subirTrackSobreCatastro\(/.test(web) && /moveLayer/.test(web), 'el track debería subirse con moveLayer (sin duplicar capas)');
+  // Al borrar el recorrido se borra también el reborde
+  assert(/function clearTrack\(\)[\s\S]{0,500}limpiarCatastro\(\)/.test(web), 'al borrar el recorrido debería borrarse también el reborde del Catastro');
   // Interpretación de la referencia: 9000+ es dominio público
   const app2 = loadApp();
   const a2 = app2.api();
@@ -390,7 +395,7 @@ await test('T-catastro', 'La línea paralela marca público en verde y particula
   eq(desplazada.length, 3, 'debería devolver el mismo número de puntos');
   assert(desplazada[0][1] < 0 && desplazada[1][1] < 0, 'la línea debería desplazarse a un lado del trazado: ' + JSON.stringify(desplazada));
   assert(Math.abs(desplazada[1][1]) < 0.0002, 'el desplazamiento debería ser de unos metros, no de kilómetros: ' + desplazada[1][1]);
-  return { detail: `${muestras.length} muestras en ${(total / 1000).toFixed(1)} km; referencia de parcela 9000+ → público, por debajo → particular; desplazamiento lateral de ~10 m` };
+  return { detail: `${muestras.length} muestras en ${(total / 1000).toFixed(1)} km; referencia de parcela 9000+ → público, por debajo → particular; el reborde reutiliza los puntos del track` };
 });
 
 await test('T-catastro-2', 'La línea del Catastro se pinta según las respuestas del servicio', async () => {
@@ -419,15 +424,18 @@ await test('T-catastro-2', 'La línea del Catastro se pinta según las respuesta
   await new Promise(r => setTimeout(r, 600));
   await a2.catastroLinea();
   const datos = app2.mapStub.getSource('catastroRuta') && app2.mapStub._setData.filter(([id]) => id === 'catastroRuta').pop();
-  assert(datos, 'debería haberse actualizado la fuente de la línea del Catastro');
+  assert(datos, 'debería haberse actualizado la fuente del reborde del Catastro');
   const features = (datos[1] && datos[1].features) || [];
-  assert(features.length >= 2, 'debería haber al menos un tramo pintado en cada lado: ' + features.length);
+  assert(features.length >= 1, 'debería haber al menos un tramo de reborde: ' + features.length);
   const colores = new Set(features.map(f => f.properties.color));
   assert(colores.has(a2.CAT_COLORES.publico), 'debería haber tramos verdes (dominio público): ' + [...colores].join(', '));
   assert(colores.has(a2.CAT_COLORES.particular), 'debería haber tramos rojos (particulares): ' + [...colores].join(', '));
-  // Dos trazos paralelos, uno a cada lado
-  const lados = new Set(features.map(f => f.properties.lado));
-  assert(lados.has('izq') && lados.has('der'), 'debería haber trazos a los dos lados: ' + [...lados].join(', '));
+  // El reborde reutiliza la MISMA geometría que el track (mismos puntos), así que va pegado por definición
+  const geoTrack = app2.mapStub._setData.filter(([id]) => id === 'route').pop();
+  const coordsTrack = new Set(((geoTrack && geoTrack[1].features) || []).flatMap(f => f.geometry.coordinates.map(c => c[0].toFixed(6) + ',' + c[1].toFixed(6))));
+  const propias = features.flatMap(f => f.geometry.coordinates.map(c => c[0].toFixed(6) + ',' + c[1].toFixed(6)));
+  const ajenas = propias.filter(c => !coordsTrack.has(c));
+  assert(ajenas.length === 0, 'el reborde debería usar los mismos puntos que el track, y hay ' + ajenas.length + ' que no coinciden');
   assert(n > 0, 'debería haber consultado el servicio del Catastro');
   const resumen = a2.CATR.ultimo;
   assert(resumen && resumen.publico > 0 && resumen.particular > 0, 'el resumen debería contar ambos tipos: ' + JSON.stringify(resumen));
