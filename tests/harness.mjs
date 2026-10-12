@@ -286,7 +286,7 @@ export function slice(source, from, to) {
 
 /* ---------------- Carga de index.html ---------------- */
 
-export function loadApp({ fetchImpl, imageMode } = {}) {
+export function loadApp({ fetchImpl, imageMode, AndroidGpx } = {}) {
   const html = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
   const src = extractScript(html);
   const doc = parseHTML(html);
@@ -447,6 +447,8 @@ export function loadApp({ fetchImpl, imageMode } = {}) {
   sandbox.window.navigator = windowStub.navigator;
   sandbox.addEventListener = () => {};
   sandbox.removeEventListener = () => {};
+  // Puente de Android (MainActivity expone window.AndroidGpx en la app nativa)
+  if (AndroidGpx !== undefined) { sandbox.AndroidGpx = AndroidGpx; windowStub.AndroidGpx = AndroidGpx; }
 
   const ctx = vm.createContext(sandbox);
 
@@ -458,7 +460,7 @@ export function loadApp({ fetchImpl, imageMode } = {}) {
   terrainElevations, tileXY, tileUrls, offlineUrlsFor, fmtMB, fmtGrade, fmtInt, fmtTime, avgOf, textOn,
   gradeColor, loadTrack, openFile, fitRoute, updateLabels, clearLabels, saveOffline, deleteOffline,
   updateOfflineButton, map, idxAt, segAt, applyBasemap, applyWmsOverlays, applyProfilePrefs, loadTile, tileCache, gpxFile,
-  queryWms, catastroHtml, queryPoint };
+  queryWms, catastroHtml, queryPoint, loadGpxText, cargarGpxNativo };
 for (const n of ['WMSOV','MAP_NAMES','offlineBreakdown','offlineTileKind','OFFLINE_VT','OFM_MAXZOOM','TILE_CACHE_MAX','tileCacheSize','tileCacheKeys','stopPrefetch']) {
   try { globalThis.__api[n] = eval(n); } catch (e) { globalThis.__api[n] = undefined; }
 }
