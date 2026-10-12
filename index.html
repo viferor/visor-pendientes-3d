@@ -1750,13 +1750,20 @@ function fitRoute(animate = true) {
     animado: !!animate, cuando: Date.now()
   };
   // En móvil la animación puede quedarse a medias (la barra del navegador cambia de tamaño al cargar
-  // el archivo y MapLibre cancela el vuelo, o el usuario toca el mapa). Si eso pasa, se vuelve a
-  // encuadrar sin animación en cuanto se toque el mapa o la pantalla cambie de tamaño.
+  // el archivo y MapLibre cancela el vuelo) o no llegar a moverse. Dos redes de seguridad:
+  //  - si al terminar el movimiento la vista no se parece a lo pedido, se encuadra otra vez sin animación;
+  //  - y si en 1,5 s no se ha movido nada, se encuadra sin animación directamente.
   if (animate) {
     const caja = S.ultimoEncuadre.caja;
-    encuadrePendiente = { caja, hasta: Date.now() + 4000 };
-    try { clearTimeout(encuadreTimer); } catch (e) {}
-    encuadreTimer = setTimeout(() => { encuadrePendiente = null; }, 4000);
+    const centro = S.ultimoEncuadre.centro, cuando = S.ultimoEncuadre.cuando;
+    encuadrePendiente = { caja, hasta: Date.now() + 6000 };
+    clearTimeout(encuadreTimer);
+    encuadreTimer = setTimeout(() => {
+      if (!S.ultimoEncuadre || S.ultimoEncuadre.cuando !== cuando) return;   // ya se ha encuadrado otra ruta
+      const c = map.getCenter();
+      if (Math.abs(c.lng - centro[0]) < 0.001 && Math.abs(c.lat - centro[1]) < 0.001) return;   // se movió
+      repetirEncuadreSiToca();
+    }, 1500);
   }
 }
 function repetirEncuadreSiToca() {
