@@ -348,3 +348,29 @@ await test('K9', 'P3: si todo responde «sin datos», la ficha lo dice clarament
   assert(/no acredita|indicio|orientativ|no es una certificaci|no sustituye/i.test(html), 'debería recordar los limites de la informacion cartografica: ' + html);
   return { detail: html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 240) };
 });
+
+/* ---------------- N: documentación y caché de la app ---------------- */
+
+await test('N1', 'El README documenta los archivos y funciones que existen', () => {
+  const readme = fs.readFileSync(path.join(REPO, 'README.md'), 'utf8');
+  const archivos = ['index.html', 'manifest.webmanifest', 'sw.js', 'offline.html', 'tests/', 'scripts/copy-www.mjs',
+    'scripts/compilar-apk.bat', 'android/', '.github/workflows/android.yml', 'vercel.json', 'capacitor.config.json'];
+  const faltanArchivos = archivos.filter(a => !readme.includes(a));
+  assert(faltanArchivos.length === 0, 'el README no menciona: ' + faltanArchivos.join(', '));
+  const funciones = ['Vías pecuarias', 'monte', 'Catastro', 'Guardar mapa de esta ruta', 'Reproductor', 'CyclOSM', 'Waymarked'];
+  const faltanFunciones = funciones.filter(f => !new RegExp(f, 'i').test(readme));
+  assert(faltanFunciones.length === 0, 'el README no documenta: ' + faltanFunciones.join(', '));
+  assert(/no acredita|indicio/i.test(readme), 'el README debería explicar los límites de la información cartográfica');
+  return { detail: `${archivos.length} archivos y ${funciones.length} funciones documentadas, con los límites de la ficha cartográfica` };
+});
+
+await test('N2', 'El precache de la app no incluye el propio service worker', () => {
+  const sw = loadSW();
+  const appFiles = sw.exports.APP_FILES;
+  assert(appFiles.includes('./index.html'), 'index.html debe estar en el precache');
+  assert(!appFiles.some(f => /sw\.js/.test(f)), 'el service worker no debe precachearse a sí mismo');
+  const ver = /const VERSION = '(v\d+)'/.exec(sw.source);
+  assert(ver, 'no se encuentra la constante VERSION en sw.js');
+  const manifest = JSON.parse(fs.readFileSync(path.join(REPO, 'manifest.webmanifest'), 'utf8'));
+  return { detail: `VERSION=${ver[1]}, ${appFiles.length} archivos precacheados, manifest con start_url ${manifest.start_url}` };
+});
