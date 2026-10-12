@@ -2082,61 +2082,101 @@ for (const key in WMSOV) {
 }
 mapReady.then(applyWmsOverlays);
 
-// Consulta de las capas de la Junta en un punto (GetFeatureInfo): devuelve texto breve o ''
+// Consulta de las capas de la Junta en un punto (GetFeatureInfo).
+// Devuelve {estado:'ok'|'vacio'|'servicio', html}: «sin resultados», «servicio no disponible»
+// y «consulta fallida» son tres cosas distintas y no deben acabar en el mismo mensaje.
+const WMS_SIN_RESULTADOS = /no (results|features)|search returned no results|not queryable|no hay datos/i;
 async function queryWms(key, ll) {
   const o = WMSOV[key];
-  if (!prefs[key] || !o.layers) return '';
+  if (!prefs[key] || !o.layers) return { estado: 'vacio', html: '' };
   const ql = (o.queryable && o.queryable.length ? o.queryable : o.layers).join(',');
   const R = 6378137, x = ll.lng * Math.PI / 180 * R, y = Math.log(Math.tan(Math.PI / 4 + ll.lat * Math.PI / 360)) * R;
   const h = 25;   // ±25 m alrededor del punto tocado
   const url = `${RED}/${o.service}?SERVICE=WMS&REQUEST=GetFeatureInfo&VERSION=1.1.1&LAYERS=${encodeURIComponent(ql)}&QUERY_LAYERS=${encodeURIComponent(ql)}` +
     `&STYLES=&SRS=${o.srs}&BBOX=${x - h},${y - h},${x + h},${y + h}&WIDTH=51&HEIGHT=51&X=25&Y=25&INFO_FORMAT=text/plain&FEATURE_COUNT=3`;
   try {
-    const t = await (await fetch(url)).text();
-    if (!t || /no (results|features)|search returned no results|not queryable/i.test(t) || !/=/.test(t)) return '';
+    const r = await fetch(url);
+    if (!r.ok) return { estado: 'servicio', html: `<p class="ldt">● ${o.label}: el servicio no responde ahora (HTTP ${r.status}). Vuelve a intentarlo.</p>` };
+    const t = await r.text();
+    // WMS puede contestar con una excepción XML y estado 200: eso no es «sin resultados»
+    if (/<ServiceException|ExceptionReport|<HTML|<!DOCTYPE html/i.test(t)) {
+      const m = /<ServiceException[^>]*>([\s\S]*?)<\/ServiceException>/i.exec(t);
+      const det = m ? m[1].replace(/\s+/g, ' ').trim().slice(0, 120) : 'respuesta inesperada del servicio';
+      return { estado: 'servicio', html: `<p class="ldt">● ${o.label}: el servicio devolvió un error (${det.replace(/</g, '&lt;')}).</p>` };
+    }
+    if (!t || WMS_SIN_RESULTADOS.test(t) || !/=/.test(t)) return { estado: 'vacio', html: '' };
     // texto plano de MapServer: líneas «campo = 'valor'»; se muestran las más útiles
     const lines = t.split(/\r?\n/).map(l => l.trim()).filter(l => /=/.test(l))
       .map(l => l.replace(/^\s*([^=]+?)\s*=\s*'?(.*?)'?\s*$/, (m, k, v) => `${k}: ${v}`))
       .filter(l => !/^(OBJECTID|FID|SHAPE|ID_|COD_|GEOM)/i.test(l) && !/: ?$/.test(l)).slice(0, 5);
-    return lines.length ? `<p class="ok">● ${o.label}</p><p class="ldt">${lines.map(l => l.replace(/</g, '&lt;')).join('<br>')}</p>` : '';
-  } catch (e) { return ''; }
+    return lines.length
+      ? { estado: 'ok', html: `<p class="ok">● ${o.label}</p><p class="ldt">${lines.map(l => l.replace(/</g, '&lt;')).join('<br>')}</p>` }
+      : { estado: 'vacio', html: '' };
+  } catch (e) {
+    return { estado: 'servicio', html: `<p class="ldt">● ${o.label}: no se pudo consultar (${String(e && e.message || e).replace(/</g, '&lt;')}).</p>` };
+  }
 }
 
 /* ---------- Consulta de parcela del Catastro ---------- */
 // En rústico la referencia es: provincia(2) municipio(3) sección(1 letra) polígono(3) parcela(5).
 // Las parcelas 9000+ son de dominio público: caminos, arroyos, carreteras, vías pecuarias…
+// Devuelve {estado:'ok'|'vacio'|'servicio', html} igual que queryWms.
+const AVISO_CARTOGRAFICO = 'Información cartográfica orientativa de las fuentes originales: no acredita titularidad, deslinde ni derechos de paso.';
 let catPopup = null;
 async function queryPoint(ll) {
   if (catPopup) catPopup.remove();
   catPopup = new maplibregl.Popup({ closeButton: true, maxWidth: '280px', className: 'cat-pop' }).setLngLat(ll).setHTML('<p>Consultando…</p>').addTo(map);
   const popup = catPopup;
-  const parts = await Promise.all([prefs.ovCat ? catastroHtml(ll) : '', queryWms('ovVvpp', ll), queryWms('ovMontes', ll)]);
-  const html = parts.filter(Boolean).join('<hr>');
-  if (popup === catPopup) popup.setHTML(html || '<p>Nada que mostrar en este punto.</p>');
+  const parts = await Promise.all([prefs.ovCat ? catastroHtml(ll) : { estado: 'vacio', html: '' }, queryWms('ovVvpp', ll), queryWms('ovMontes', ll)]);
+  const html = parts.filter(p => p && p.html).map(p => p.html).join('<hr>');
+  const fallos = parts.filter(p => p && p.estado === 'servicio').length;
+  const pie = `<p class="ldt">${AVISO_CARTOGRAFICO}</p>`;
+  const aviso = fallos ? `<p class="warn">No se pudo consultar ${fallos === 1 ? 'una de las fuentes' : 'algunas fuentes'}: lo que falta no significa que no haya nada en este punto.</p>` : '';
+  const resultado = {
+    estado: fallos ? 'servicio' : (html ? 'ok' : 'vacio'),
+    html: (html || '<p>Sin datos de Catastro, vías pecuarias ni montes públicos en este punto.</p>') + aviso + pie
+  };
+  if (popup === catPopup) popup.setHTML(resultado.html);
+  return resultado;
 }
+// La consulta del Catastro devuelve un código de error propio: «para esas coordenadas no hay
+// referencia» es «sin datos» (cuerr=1), mientras que un error de servicio (cuerr>=2) no es lo mismo
+// y no se puede presentar como «aquí no hay nada».
 async function catastroHtml(ll) {
   const url = `${CAT}/ovcservweb/OVCSWLocalizacionRC/OVCCoordenadas.asmx/Consulta_RCCOOR?SRS=EPSG:4326&Coordenada_X=${ll.lng.toFixed(6)}&Coordenada_Y=${ll.lat.toFixed(6)}`;
   try {
     const r = await fetch(url);
-    const doc = new DOMParser().parseFromString(await r.text(), 'text/xml');
+    const texto = await r.text();
+    if (!r.ok) return { estado: 'servicio', html: `<p class="ldt">● Catastro: el servicio no responde ahora (HTTP ${r.status}). Vuelve a intentarlo.</p>` };
+    const doc = new DOMParser().parseFromString(texto, 'text/xml');
+    if (doc.getElementsByTagName('parsererror').length) return { estado: 'servicio', html: '<p class="ldt">● Catastro: la respuesta no se pudo leer (formato inesperado).</p>' };
     const t = tag => { const n = doc.getElementsByTagName(tag)[0]; return n ? n.textContent.trim() : ''; };
-    const rc = t('pc1') + t('pc2'), ldt = t('ldt'), err = t('des');
-    if (!rc) return `<p>${err || 'No hay parcela catastral en este punto.'}</p>`;
+    const rc = (t('pc1') + t('pc2')).replace(/\s/g, ''), ldt = t('ldt'), des = t('des'), cod = parseInt(t('cod'), 10);
+    if (!rc) {
+      const detalle = des ? ` (${des.replace(/</g, '&lt;')})` : '';
+      return Number.isFinite(cod) && cod !== 16
+        ? { estado: 'servicio', html: `<p class="ldt">● Catastro: el servicio devolvió un error${detalle}.</p>` }
+        : { estado: 'vacio', html: `<p>Sin referencia catastral en este punto${detalle}.</p>` };
+    }
     let html = `<p class="ref">Ref. catastral <b>${rc}</b></p>`;
     if (/^[0-9]{5}[A-Z]/.test(rc)) {
-      const pol = parseInt(rc.slice(6, 9), 10), parc = parseInt(rc.slice(9, 14), 10);
-      html += `<p>Polígono <b>${pol}</b> · Parcela <b>${parc}</b></p>`;
-      html += parc >= 9000
-        ? '<p class="ok">● Dominio público: camino, arroyo, carretera o vía pecuaria.</p>'
+      // Rústico: provincia(2) municipio(3) sector(1 letra) polígono(3) parcela(5), y en las
+      // referencias de 20 caracteres hay 4 de control al final. La parcela son los 5 dígitos
+      // anteriores a ese sufijo, no una posición fija desde el principio.
+      const cuerpo = rc.replace(/[A-Z]{2}$/, '');
+      const parc = parseInt(cuerpo.slice(-5), 10), pol = parseInt(rc.slice(6, 9), 10);
+      html += `<p>Polígono <b>${Number.isFinite(pol) ? pol : rc.slice(6, 9)}</b> · Parcela <b>${Number.isFinite(parc) ? parc : cuerpo.slice(-5)}</b></p>`;
+      html += Number.isFinite(parc) && parc >= 9000
+        ? '<p class="ok">● La numeración 9000+ es un indicio cartográfico de dominio público (camino, arroyo, carretera o vía pecuaria); no es una determinación jurídica.</p>'
         : '<p class="warn">● Parcela particular o patrimonial. Si hay un camino aquí, puede ser privado: compruébalo.</p>';
     } else {
       html += '<p>Suelo urbano.</p>';
     }
     if (ldt) html += `<p class="ldt">${ldt.replace(/</g, '&lt;')}</p>`;
-    html += `<p><a href="https://www1.sedecatastro.gob.es/CYCBienInmueble/OVCConCiud.aspx?UrbRus=&RefC=${encodeURIComponent(rc.slice(0, 14))}" target="_blank" rel="noopener">Ver en la Sede del Catastro</a></p>`;
-    return html;
+    html += `<p><a href="https://www1.sedecatastro.gob.es/CYCBienInmueble/OVCConCiud.aspx?UrbRus=&RefC=${encodeURIComponent(rc)}" target="_blank" rel="noopener">Ver en la Sede del Catastro</a></p>`;
+    return { estado: 'ok', html };
   } catch (e) {
-    return '<p>No se pudo consultar el Catastro. Revisa la conexión.</p>';
+    return { estado: 'servicio', html: `<p class="ldt">● Catastro: no se pudo consultar (${String(e && e.message || e).replace(/</g, '&lt;')}). Revisa la conexión.</p>` };
   }
 }
 map.on('click', e => {
