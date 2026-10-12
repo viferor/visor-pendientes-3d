@@ -12,7 +12,8 @@ const tileCacheSize = api.tileCacheSize;
 
 await test('H1', 'sw.js se evalúa y precachea solo los archivos listados', async () => {
   const sw = loadSW();
-  eq(sw.exports.VERSION, 'v26', 'VERSION del service worker');
+  assert(/^v\d+$/.test(sw.exports.VERSION), 'VERSION del service worker con formato vN: ' + sw.exports.VERSION);
+  eq(sw.exports.APP_CACHE, 'pendientes3d-app-' + sw.exports.VERSION, 'el nombre de la caché de la app sigue a VERSION');
   await sw.fire('install', {});
   const names = await sw.caches.keys();
   const appCache = sw.exports.APP_CACHE;
