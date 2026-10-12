@@ -270,15 +270,20 @@ await test('R-encuadre-3', 'El botón «i» del panel muestra las medidas al pul
   await a2.loadTrack('Medir', rutaSintetica(40), false);
   const boton = app2.el('infoEncuadre2');
   assert(boton, 'debería existir el botón «i» en el panel');
+  const salida = app2.el('diag');
+  assert(salida, 'debería existir el cuadro de diagnóstico');
+  assert(salida.hidden, 'el cuadro debería empezar oculto');
   const manejadores = boton.click();   // se ejecutan los manejadores reales de «click»
   assert(manejadores >= 1, 'el botón «i» no tiene ningún manejador de click enganchado');
-  const salida = app2.el('actEstado');
-  assert(!salida.hidden, 'debería mostrarse el panel de medidas');
-  const texto = (salida.children || []).map(c => c.textContent).join(' | ');
+  assert(!salida.hidden, 'al pulsar la «i» debería aparecer el cuadro de diagnóstico en pantalla');
+  const texto = app2.el('diagTexto').textContent;
   assert(/Ventana/.test(texto), 'debería decir el tamaño de la ventana: ' + texto);
   assert(/Cámara: centro/.test(texto), 'debería decir dónde está la cámara: ' + texto);
   assert(/Último encuadre|ninguno/.test(texto), 'debería decir el último encuadre: ' + texto);
-  return { detail: texto.slice(0, 160) };
+  // Y se puede cerrar
+  const cerrado = app2.el('diagCerrar').click();
+  assert(cerrado >= 1 && salida.hidden, 'el botón Cerrar debería ocultar el cuadro');
+  return { detail: 'cuadro visible al pulsar la «i» (' + texto.split('\n')[0].slice(0, 60) + '…) y se cierra con Cerrar' };
 });
 
 await test('Q5', 'Si hay versión nueva se avisa y se ofrece recargar (sin recargar sola)', async () => {
