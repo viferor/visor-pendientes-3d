@@ -2628,7 +2628,18 @@ function desplazarLinea(coords, metros) {
 // cada trazo: en vez de lanzar una tanda de consultas por trazo (se solaparían), si ya hay una en
 // marcha se apunta que hay que repetirla y se repite al terminar.
 async function catastroLinea() {
-  if (!prefs.ovCatRuta || !S.pts || S.pts.length < 2 || !map.getSource('catastroRuta')) { limpiarCatastro(); return; }
+  if (!prefs.ovCatRuta) {
+    limpiarCatastro();
+    // Si está apagado, se dice: antes no avisaba de nada y parecía que la función no existía.
+    if (S.pts && S.pts.length >= 2) setStatusProgreso('El marcado del tipo de parcela en la ruta está apagado (Ajustes → «Marcar en la ruta el tipo de parcela»).', 7000);
+    return;
+  }
+  if (!S.pts || S.pts.length < 2 || !map.getSource('catastroRuta')) { limpiarCatastro(); return; }
+  if (!map.getLayer('catastroLinea')) {
+    // No debería pasar (las capas se crean al cargar el mapa), pero si pasa conviene saberlo
+    setStatusProgreso('No se puede pintar el tipo de parcela en la ruta (falta la capa del mapa).', 9000);
+    return;
+  }
   if (CATR.pidiendo) { CATR.repetir = true; return; }
   CATR.pidiendo = true;
   try {
@@ -2685,6 +2696,13 @@ async function recorrerCatastro() {
   if (publico) partes.push(`dominio público ${publico}/${res.length}`);
   if (particular) partes.push(`parcelas particulares ${particular}/${res.length}`);
   if (sin) partes.push(`sin referencia ${sin}`);
+  // Se dice siempre en qué ha quedado, incluidos los casos en los que no hay nada que pintar: así se
+  // distingue «no se ha consultado» de «se ha consultado y no hay tramos que marcar».
+  if (!features.length) {
+    setStatusProgreso(`Catastro en la ruta: ${res.length} puntos consultados y ningún tramo que marcar` +
+      (sin === res.length ? ' (el Catastro no da referencia en ninguno)' : '') + (errores ? ` · ${errores} sin respuesta` : ''));
+    return;
+  }
   if (partes.length) setStatusProgreso(`Catastro sobre la ruta: ${partes.join(' · ')}` + (CATR.ultimo.refs ? ` · ${CATR.ultimo.refs} referencias` : ''));
 }
 
