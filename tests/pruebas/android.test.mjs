@@ -264,6 +264,26 @@ await test('R-encuadre-2', 'Si el encuadre se queda a medias, se repite sin anim
   return { detail: 'repite el encuadre al tocar el mapa y al ver que la vista quedó en otro sitio, las dos veces sin animación' };
 });
 
+await test('R-encuadre-4', 'Los huecos de los paneles nunca se comen la pantalla (el fallo del móvil)', () => {
+  const web = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
+  // El fallo real: en móvil se usaba la altura del panel (598 px en una pantalla de 772) como hueco
+  // superior, la zona libre quedaba en negativo y MapLibre no movía la cámara.
+  assert(!/arriba:\s*wide\s*\?\s*70\s*:\s*Math\.round\(panel\.bottom/.test(web), 'el hueco superior en móvil no puede ser la altura del panel');
+  assert(/dispY < 160/.test(web), 'debería haber una comprobación de que la zona libre vertical no es ridícula');
+  assert(/dispX < 120/.test(web), 'debería haber una comprobación de que la zona libre horizontal no es ridícula');
+  const app2 = loadApp();
+  const a2 = app2.api();
+  // Se simula una pantalla de móvil y un panel enorme, como en el reporte
+  app2.sandbox.window.innerWidth = 360; app2.sandbox.window.innerHeight = 772;
+  const antes = app2.el('panel').getBoundingClientRect;
+  app2.el('panel').getBoundingClientRect = () => ({ width: 300, height: 700, left: 12, top: 20, right: 312, bottom: 720 });
+  const h = a2.huecosMapa();
+  assert(h.arriba + h.abajo <= 772 * 0.6, `los huecos verticales no pueden comerse la pantalla: ${h.arriba}+${h.abajo} de 772`);
+  assert(h.izquierda + h.derecha <= 360 * 0.6, `los huecos horizontales no pueden comerse la pantalla: ${h.izquierda}+${h.derecha} de 360`);
+  app2.el('panel').getBoundingClientRect = antes;
+  return { detail: `en pantalla de 360×772 con un panel de 700 px de alto, los huecos quedan en arriba ${h.arriba}, abajo ${h.abajo}, izq ${h.izquierda}, der ${h.derecha}` };
+});
+
 await test('R-encuadre-3', 'El botón «i» del panel muestra las medidas al pulsarlo de verdad', async () => {
   const app2 = loadApp();
   const a2 = app2.api();

@@ -35,9 +35,14 @@
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html,body{height:100%;margin:0}
-body{background:var(--panel-solid);color:var(--text);font:14px/1.45 var(--body);overflow:hidden}
+/* Nada puede sobresalir a lo ancho: un elemento más ancho que la ventana deja el mapa corto y
+   aparece una franja sin pintar a la derecha (visto en un móvil de 360 px). */
+html{overflow-x:hidden}
+body{background:var(--panel-solid);color:var(--text);font:14px/1.45 var(--body);overflow:hidden;overflow-x:hidden;max-width:100vw;width:100%}
 body.no-profile{--profile-h:0px}
-#map{position:absolute;inset:0}
+#map{position:absolute;inset:0;width:100%;height:100%}
+/* El lienzo de MapLibre nunca debe pasarse del contenedor */
+#map .maplibregl-canvas{max-width:100%!important}
 
 /* Panel */
 #panel{position:absolute;top:calc(12px + var(--safe-area-inset-top, env(safe-area-inset-top,0px)));left:calc(12px + var(--safe-area-inset-left, env(safe-area-inset-left,0px)));width:316px;
@@ -1760,15 +1765,19 @@ function ajustarTamanoMapa() {
   drawProfile();
 }
 // Huecos que dejan los paneles, en píxeles, para no encuadrar la ruta debajo de ellos.
+// OJO en móvil: el panel ocupa casi toda la pantalla, así que NO se puede usar su altura como hueco
+// superior (598 px de hueco en una pantalla de 772 dejaba la zona libre en negativo y MapLibre no
+// movía la cámara). En móvil se usan huecos fijos pequeños: la ruta queda debajo de los paneles, que
+// son translúcidos, y así el encuadre siempre tiene sitio.
 function huecosMapa() {
-  const panel = $('panel').getBoundingClientRect(), prof = $('profile').getBoundingClientRect();
-  const wide = window.innerWidth > 640;
-  return {
-    arriba: wide ? 70 : Math.round(panel.bottom + 20),
-    abajo: Math.round(prof.height + 50),
-    izquierda: wide ? Math.round(panel.right + 40) : 30,
-    derecha: 70
-  };
+  const prof = $('profile').getBoundingClientRect();
+  const abajo = Math.round((prof.height || 0) + 40);
+  const alto = window.innerHeight || 800, ancho = window.innerWidth || 400;
+  if (ancho <= 640) {
+    return { arriba: Math.min(140, Math.round(alto * 0.18)), abajo: Math.min(abajo, Math.round(alto * 0.35)), izquierda: 24, derecha: 24 };
+  }
+  const panel = $('panel').getBoundingClientRect();
+  return { arriba: 70, abajo: Math.min(abajo, Math.round(alto * 0.3)), izquierda: Math.min(Math.round(panel.right + 40), Math.round(ancho * 0.4)), derecha: 70 };
 }
 // Centro y caja de la ruta
 function cajaRuta() {
@@ -1785,8 +1794,11 @@ function encuadrarRuta(animate) {
   const ancho = map.getContainer().clientWidth || window.innerWidth;
   const alto = map.getContainer().clientHeight || window.innerHeight;
   const dispX = ancho - pad.izquierda - pad.derecha, dispY = alto - pad.arriba - pad.abajo;
-  // Si los paneles dejan muy poco hueco, se usan huecos mínimos en vez de no encuadrar nada
-  const dx = Math.max(80, dispX), dy = Math.max(120, dispY);
+  // Los huecos nunca pueden comerse toda la pantalla: si pasa, se reducen a la mitad. Si la zona útil
+  // queda por debajo de un mínimo, MapLibre no mueve la cámara y el encuadre no se aplica.
+  if (dispX < 120) { const sobra = 120 - dispX; pad.izquierda = Math.max(0, pad.izquierda - sobra / 2); pad.derecha = Math.max(0, pad.derecha - sobra / 2); }
+  if (dispY < 160) { const sobra = 160 - dispY; pad.arriba = Math.max(0, pad.arriba - sobra / 2); pad.abajo = Math.max(0, pad.abajo - sobra / 2); }
+  const dx = Math.max(120, ancho - pad.izquierda - pad.derecha), dy = Math.max(160, alto - pad.arriba - pad.abajo);
   const aLat = Math.max(1e-6, c.norte - c.sur), aLon = Math.max(1e-6, c.este - c.oeste);
   const mPorLon = 111320 * Math.cos(c.centro[1] * Math.PI / 180);
   // El relieve inclinado hace que se vea menos alto de lo que dice la caja: se pide un 35 % más

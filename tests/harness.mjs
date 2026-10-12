@@ -470,7 +470,7 @@ export function loadApp({ fetchImpl, imageMode, AndroidGpx } = {}) {
   gradeColor, loadTrack, openFile, fitRoute, updateLabels, clearLabels, saveOffline, deleteOffline,
   updateOfflineButton, map, idxAt, segAt, applyBasemap, applyWmsOverlays, applyProfilePrefs, loadTile, tileCache, gpxFile,
   queryWms, catastroHtml, queryPoint, loadGpxText, cargarGpxNativo, indiceMasCercano, initToqueTrack,
-  leerVersionPublicada, buscarActualizacion, mostrarVersion };
+  leerVersionPublicada, buscarActualizacion, mostrarVersion, huecosMapa, encuadrarRuta };
 for (const n of ['WMSOV','MAP_NAMES','offlineBreakdown','offlineTileKind','OFFLINE_VT','OFM_MAXZOOM','TILE_CACHE_MAX','tileCacheSize','tileCacheKeys','stopPrefetch','repetirEncuadreSiToca','revisarEncuadrePendiente']) {
   try { globalThis.__api[n] = eval(n); } catch (e) { globalThis.__api[n] = undefined; }
 }
