@@ -151,9 +151,25 @@ await test('Q1', 'Las atribuciones salen cerradas por defecto y abajo a la izqui
   assert(/function colocarAtribuciones\(/.test(web), 'falta la función que recoloca las atribuciones');
   assert(/maplibregl-ctrl-bottom-left/.test(web), 'debería colocarlas en el contenedor de abajo a la izquierda');
   assert(/classList\.remove\('maplibregl-compact-show'\)/.test(web), 'deberían empezar cerradas (sin la clase de desplegado)');
-  assert(/#map \.maplibregl-ctrl-attrib\.maplibregl-compact\{[^}]*left:8px/.test(web), 'el CSS debería anclarlas a la izquierda');
-  assert(/#map \.maplibregl-ctrl-attrib\.maplibregl-compact\{[^}]*bottom:8px/.test(web), 'el CSS debería ponerlas al pie');
-  return { detail: 'attributionControl compacto, recolocadas a bottom-left y el CSS las ancla abajo a la izquierda' };
+  assert(/#map \.maplibregl-ctrl-attrib\.maplibregl-compact\{[^}]*left:6px/.test(web), 'el CSS debería anclarlas a la izquierda');
+  assert(/#map \.maplibregl-ctrl-attrib\.maplibregl-compact\{[^}]*bottom:4px/.test(web), 'el CSS debería ponerlas al pie');
+  assert(/#map \.maplibregl-ctrl-attrib\.maplibregl-compact\{[^}]*opacity:\.4/.test(web), 'deberían ser discretas en reposo (semiopacas)');
+  assert(/#map \.maplibregl-ctrl-attrib\.maplibregl-compact\{[^}]*width:22px/.test(web), 'el botón ⓘ debería ser pequeño (22 px)');
+  assert(/hover[\s\S]{0,80}opacity:1/.test(web), 'al pasar el dedo o el ratón deberían verse del todo');
+  return { detail: 'attributionControl compacto, ⓘ de 22 px al 40 % de opacidad abajo a la izquierda, y completo al tocarlo' };
+});
+
+await test('Q1b', 'Ajustes incluye la lista completa de créditos y licencias', () => {
+  const web = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
+  assert(/id="creditos"/.test(web), 'falta la sección de créditos en Ajustes');
+  const fuentes = ['Esri', 'Maxar', 'OpenStreetMap', 'CyclOSM', 'OpenFreeMap', 'Waymarked Trails',
+    'Catastro', 'REDIAM', 'Terrain Tiles', 'OSRM', 'BRouter', 'MapLibre'];
+  const faltan = fuentes.filter(f => !web.includes(f));
+  assert(faltan.length === 0, 'faltan fuentes en los créditos: ' + faltan.join(', '));
+  const licencias = ['ODbL', 'CC BY-SA', 'BSD'];
+  const faltanLic = licencias.filter(l => !web.includes(l));
+  assert(faltanLic.length === 0, 'faltan menciones de licencia: ' + faltanLic.join(', '));
+  return { detail: `${fuentes.length} fuentes documentadas en Ajustes, con sus licencias (${licencias.join(', ')}) y el aviso de que la atribución se mantiene en el mapa por licencia` };
 });
 
 await test('Q2', 'El panel plegado se queda solo con el botón «+»', () => {

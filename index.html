@@ -217,11 +217,17 @@ body.layout .movable *{pointer-events:none}
   border:3px dashed var(--paint);font:700 32px var(--display);text-transform:uppercase;color:var(--paint)}
 
 .maplibregl-ctrl-attrib{font-size:10px}
-/* Atribuciones (Esri, Maxar, OpenStreetMap…): cerradas por defecto y abajo a la izquierda, justo
-   encima del perfil. Se quedan en modo «compacto»: el botón ⓘ y, al pulsarlo, el texto. */
-#map .maplibregl-ctrl-attrib.maplibregl-compact{position:absolute;right:auto;left:8px;bottom:8px;
-  margin:0;background:rgba(13,18,16,.72);border-radius:6px}
-#map .maplibregl-ctrl-attrib.maplibregl-compact-show{padding:0 6px 0 22px;background:rgba(13,18,16,.88)}
+/* Atribuciones (Esri, Maxar, OpenStreetMap…): cerradas por defecto y discretas. No se pueden quitar
+   del mapa porque las licencias de Esri, OpenStreetMap, CyclOSM, Waymarked Trails y OpenFreeMap lo
+   exigen; la lista completa está en Ajustes → «Datos y créditos». */
+#map .maplibregl-ctrl-attrib.maplibregl-compact{position:absolute;right:auto;left:6px;bottom:4px;margin:0;
+  background:rgba(13,18,16,.35);border-radius:50%;width:22px;height:22px;min-height:22px;
+  display:flex;align-items:center;justify-content:center;opacity:.4;transition:opacity .2s}
+#map .maplibregl-ctrl-attrib.maplibregl-compact:hover,
+#map .maplibregl-ctrl-attrib.maplibregl-compact:focus-within{opacity:1}
+#map .maplibregl-ctrl-attrib.maplibregl-compact .maplibregl-ctrl-attrib-button{width:22px;height:22px}
+#map .maplibregl-ctrl-attrib.maplibregl-compact-show{width:auto;height:auto;min-height:0;padding:2px 6px 2px 22px;
+  border-radius:6px;background:rgba(13,18,16,.9);opacity:1}
 #map .maplibregl-ctrl-attrib .maplibregl-ctrl-attrib-inner{color:#dfe7df}
 .maplibregl-ctrl-bottom-left,.maplibregl-ctrl-bottom-right{bottom:calc(var(--profile-h) + var(--safe-area-inset-bottom, env(safe-area-inset-bottom,0px)))}
 .maplibregl-ctrl-top-right{top:var(--safe-area-inset-top, env(safe-area-inset-top,0px));right:var(--safe-area-inset-right, env(safe-area-inset-right,0px))}
@@ -373,6 +379,25 @@ body.layout .movable *{pointer-events:none}
           <button class="btn" id="buscarAct" type="button" style="flex:none">Buscar actualización</button>
         </div>
         <p class="hint" id="actEstado" hidden></p>
+        <details class="settings" id="creditos">
+          <summary>Datos y créditos</summary>
+          <div class="stack">
+            <p class="ldt">Información cartográfica de sus fuentes originales. Esta lista es la atribución completa
+            que exigen sus licencias.</p>
+            <p class="ldt"><b>Imágenes satélite:</b> © Esri, Maxar, Earthstar Geographics.</p>
+            <p class="ldt"><b>Híbrido</b> (carreteras y nombres): © Esri, HERE, Garmin, © colaboradores de OpenStreetMap.</p>
+            <p class="ldt"><b>Mapa ciclista y sendas:</b> CyclOSM · © colaboradores de OpenStreetMap (ODbL).</p>
+            <p class="ldt"><b>Pistas, sendas, nombres y cimas:</b> OpenFreeMap · © colaboradores de OpenStreetMap (ODbL).</p>
+            <p class="ldt"><b>Rutas MTB y de senderismo GR, PR y SL:</b> Waymarked Trails (CC BY-SA).</p>
+            <p class="ldt"><b>Parcelas y referencias catastrales:</b> © Dirección General del Catastro (WMS y servicio de coordenadas).</p>
+            <p class="ldt"><b>Vías pecuarias y montes públicos de Andalucía:</b> REDIAM, Junta de Andalucía (WMS).</p>
+            <p class="ldt"><b>Relieve 3D:</b> Terrain Tiles (Mapzen / AWS Open Data).</p>
+            <p class="ldt"><b>Cálculo de rutas:</b> OSRM (servidor público de FOSSGIS) y BRouter (brouter.de) · datos © colaboradores de OpenStreetMap.</p>
+            <p class="ldt"><b>Mapa:</b> MapLibre GL JS (BSD).</p>
+            <p class="ldt">Las consultas al Catastro y a la Junta de Andalucía se hacen a través de este sitio para
+            evitar problemas de CORS; los datos son de sus fuentes originales.</p>
+          </div>
+        </details>
       </div>
     </details>
 
