@@ -1204,10 +1204,54 @@ function pumpPrefetch() {
 // Descarga el mapa elegido, las capas activas y el relieve en un pasillo alrededor de la ruta, y lo guarda en
 // una caché aparte ('pendientes3d-offline') que el service worker consulta primero y nunca recorta.
 const OFF = { cache: 'pendientes3d-offline', busy: false, cancel: false };
-const AVG_KB = { sat: 22, cyclosm: 18, ov: 4, ref: 6, dem: 60 };
+const AVG_KB = { sat: 22, cyclosm: 18, ov: 4, ref: 6, dem: 60, vt: 30 };
+// Plantilla de los tiles vectoriales de OpenFreeMap (los nombres de pistas, sendas y cimas).
+// La fuente del mapa usa el TileJSON de OpenFreeMap, que cambia de nombre de carpeta al actualizar
+// los datos, por eso aquí no se puede leer de map.getSource('ofm').tiles: se fija la plantilla.
+// El TileJSON declara maxzoom 14, que es el límite que se respeta al guardar.
+const OFM_VT = 'https://tiles.openfreemap.org/planet/20261004_113936_pt/{z}/{x}/{y}.pbf';
+const OFM_MAXZOOM = 14;
+// Nombre corto de cada caché/fichero guardado, para poder decirle al usuario qué tiene sin cobertura
+function offlineTileKind(u) {
+  if (/openfreemap\.org\/fonts\//.test(u)) return 'fuentes';
+  if (/tiles\.openfreemap\.org\//.test(u)) return 'pistas y nombres';
+  if (/World_Imagery/.test(u)) return prefs.basemap === 'cyclosm' ? 'satélite (debajo)' : 'satélite';
+  if (/World_Transportation|World_Boundaries/.test(u)) return 'híbrido (carreteras y nombres)';
+  if (/cyclosm-lite/.test(u)) return 'sendas CyclOSM';
+  if (/cyclosm/.test(u)) return 'CyclOSM';
+  if (/\/catastro\//.test(u)) return 'Catastro';
+  if (/\/rediam\/[^?]*REDIAM_Inventario_VVPP/.test(u)) return 'vías pecuarias';
+  if (/\/rediam\/[^?]*REDIAM_Montes/.test(u)) return 'montes públicos';
+  if (/\/rediam\//.test(u)) return 'Junta de Andalucía';
+  if (/waymarkedtrails|\/wmt\//.test(u)) return /\/mtb\//.test(u) ? 'rutas MTB' : 'senderismo GR/PR/SL';
+  if (/terrarium/.test(u)) return 'relieve';
+  return 'otros';
+}
+// Resumen «satélite 126 · relieve 69 · …» de lo que se va a guardar (o de lo guardado)
+function offlineBreakdown(urls) {
+  const cuenta = new Map();
+  for (const u of (urls instanceof Map ? urls.keys() : urls)) {
+    const k = offlineTileKind(u);
+    cuenta.set(k, (cuenta.get(k) || 0) + 1);
+  }
+  return [...cuenta.entries()].sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `${k} ${n.toLocaleString('es-ES')}`).join(' · ');
+}
+// URL de una tesela de una fuente raster definida por plantilla (Catastro, REDIAM…),
+// sustituyendo {bbox-epsg-3857} por el mismo cálculo que hace MapLibre para EPSG:3857.
+function wmsTileUrl(sourceId, z, x, y) {
+  const src = map.getSource(sourceId);
+  const t = src && src.tiles && src.tiles[0];
+  if (!t) return null;
+  const n = 2 ** z, R = 6378137, span = 2 * Math.PI * R / n;
+  const minX = -Math.PI * R + x * span, maxX = minX + span;
+  const maxY = Math.PI * R - y * span, minY = maxY - span;
+  return t.replace('{bbox-epsg-3857}', `${minX},${minY},${maxX},${maxY}`)
+          .replace('{z}', z).replace('{x}', x).replace('{y}', y);
+}
 function offlineUrlsFor(pts) {
   const urls = new Map();   // url -> tamaño medio estimado (KB)
-  const add = (u, kb) => { if (!urls.has(u)) urls.set(u, kb); };
+  const add = (u, kb) => { if (u && !urls.has(u)) urls.set(u, kb); };
   const total = pts[pts.length - 1].d, idxs = [];
   for (let d = 0; d <= total; d += 120) idxs.push(idxAt(d));
   idxs.push(pts.length - 1);
@@ -1226,10 +1270,14 @@ function offlineUrlsFor(pts) {
         }
         if (prefs.ovMtb) add(`${WMT}/mtb/${z}/${x}/${y}.png`, AVG_KB.ov);
         if (prefs.ovHike) add(`${WMT}/hiking/${z}/${x}/${y}.png`, AVG_KB.ov);
+        // Parcelas del Catastro y capas de la Junta: WMS, con los mismos límites de zoom que su fuente
+        if (prefs.ovCat && z >= 13) add(wmsTileUrl('catastro', z, x, y), AVG_KB.ref);
+        if (prefs.ovVvpp && map.getLayer('vvpp') && z >= 9) add(wmsTileUrl('vvpp', z, x, y), AVG_KB.ov);
+        if (prefs.ovMontes && map.getLayer('montes') && z >= 9) add(wmsTileUrl('montes', z, x, y), AVG_KB.ov);
         // Relieve: hasta z14 con margen, z15 solo bajo la ruta
         if (z <= 14) add(`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`, AVG_KB.dem);
-        const vt = prefs.ovNames && map.getSource('ofm') && map.getSource('ofm').tiles && map.getSource('ofm').tiles[0];
-        if (vt && z <= 14) add(vt.replace('{z}', z).replace('{x}', x).replace('{y}', y), 30);
+        // Tiles vectoriales de OpenStreetMap (pistas, sendas y nombres)
+        if (prefs.ovNames && z <= OFM_MAXZOOM) add(OFM_VT.replace('{z}', z).replace('{x}', x).replace('{y}', y), AVG_KB.vt);
       }
       if (z === 15) add(`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/15/${tx}/${ty}.png`, AVG_KB.dem);
     }
@@ -1250,12 +1298,19 @@ function updateOfflineButton() {
   let kb = 0; for (const v of urls.values()) kb += v;
   btn.disabled = false;
   btn.textContent = `Guardar mapa de esta ruta (≈ ${fmtMB(kb)})`;
-  btn.title = `${urls.size.toLocaleString('es-ES')} teselas · mapa ${MAP_NAMES[prefs.basemap]}${prefs.ovLite ? ' + sendas CyclOSM' : ''}${prefs.ovMtb ? ' + rutas MTB' : ''}${prefs.ovHike ? ' + senderismo' : ''} + relieve`;
+  btn.title = `${urls.size.toLocaleString('es-ES')} teselas:\n${offlineBreakdown(urls)}`;
 }
 async function renderOfflineList() {
   const list = $('offlineList'), meta = offlineMeta();
   list.innerHTML = meta.map(m => `<li><span title="${m.name.replace(/"/g, '&quot;')}">${m.name.replace(/</g, '&lt;')}</span>
     <small>${fmtMB(m.kb)} · ${MAP_NAMES[m.map] || ''}</small><button class="btn" type="button" data-del="${m.id}">Borrar</button></li>`).join('');
+  // Detalle de lo que se guardó de verdad en cada zona (por si falta algo)
+  for (const m of meta) {
+    const li = list.querySelector(`[data-del="${m.id}"]`);
+    if (!li) continue;
+    const urls = await idbGet('offline:' + m.id);
+    if (Array.isArray(urls) && urls.length) li.closest('li').title = `${urls.length.toLocaleString('es-ES')} teselas:\n${offlineBreakdown(urls)}`;
+  }
   try {
     const est = await navigator.storage.estimate();
     $('offlineUsage').textContent = meta.length ? `Espacio usado por la app: ${fmtMB((est.usage || 0) / 1024)}` : '';
@@ -1294,10 +1349,10 @@ async function saveOffline() {
   const id = Date.now().toString(36);
   await idbSet('offline:' + id, urls);
   const meta = offlineMeta();
-  meta.unshift({ id, name: S.name || 'Ruta', date: Date.now(), kb: bytes / 1024, n: urls.length, map: prefs.basemap });
+  meta.unshift({ id, name: S.name || 'Ruta', date: Date.now(), kb: bytes / 1024, n: urls.length, map: prefs.basemap, parts: offlineBreakdown(urls) });
   setOfflineMeta(meta);
   setStatus(fail ? `Mapa guardado, pero ${fail} teselas no se pudieron descargar. Vuelve a pulsar para completarlo.`
-                 : `Mapa de «${S.name || 'la ruta'}» guardado: lo verás sin cobertura.`, !!fail);
+                 : `Mapa de «${S.name || 'la ruta'}» guardado: lo verás sin cobertura.\nGuardado: ${offlineBreakdown(urls)}`, !!fail);
   renderOfflineList(); updateOfflineButton();
 }
 async function deleteOffline(id) {
