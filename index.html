@@ -677,9 +677,15 @@ function haversine(a, b) {
 
 /* ---------- Altitud del terreno (teselas Terrarium) ---------- */
 const tileCache = new Map();
+// Cada tesela descodificada ocupa ~256 KB en memoria: se guardan las últimas y se desechan las
+// más antiguas para que una ruta larga (o cambiar varias veces de fuente de altitud) no llene la memoria.
+const TILE_CACHE_MAX = 600;
+const tileCacheSize = () => tileCache.size;
+const tileCacheKeys = () => [...tileCache.keys()];
 function loadTile(z, x, y) {
   const key = `${z}/${x}/${y}`;
   if (!tileCache.has(key)) {
+    if (tileCache.size >= TILE_CACHE_MAX) tileCache.delete(tileCache.keys().next().value);
     tileCache.set(key, new Promise((res, rej) => {
       const img = new Image();
       img.crossOrigin = 'anonymous';
@@ -1156,6 +1162,13 @@ over.addEventListener('pointerleave', () => { if (!dragging) hoverOut(); });
 // en un pasillo alrededor de la ruta, en el orden en que se van a recorrer. El service worker las
 // guarda, así que el vuelo no se queda esperando y la siguiente vez sale de la caché.
 const PREF = { key: null, queue: [], running: 0, done: 0, total: 0, seen: new Set() };
+// Vacía la cola de precarga: al cambiar de ruta (o al empezar a dibujar) no tiene sentido
+// seguir pidiendo teselas del recorrido anterior. Lo que esté en vuelo termina, pero no se
+// encadenan más peticiones.
+function stopPrefetch() {
+  PREF.queue = [];
+  PREF.total = PREF.done;
+}
 function tileXY(lon, lat, z) {
   const n = 2 ** z, s = Math.sin(lat * Math.PI / 180);
   return [Math.floor((lon + 180) / 360 * n), Math.floor((0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n)];
@@ -1194,7 +1207,7 @@ function prefetchRoute(fromIdx, backwards) {
       }
     }
   }
-  PREF.queue = order.concat(PREF.queue);
+  PREF.queue = PREF.queue.concat(order);
   PREF.total += order.length;
   pumpPrefetch();
 }
@@ -1639,6 +1652,7 @@ async function idbGet(key) {
 const saveLastTrack = (name, pts) => idbSet('lastTrack', { name, pts, savedAt: Date.now() });
 
 async function loadTrack(name, pts, save = true, avisos = '') {
+  stopPrefetch();
   if (save) saveLastTrack(name, pts);
   await mapReady;
   if (D.active) endDraw(false);
@@ -1824,6 +1838,7 @@ async function refreshDraw() {
 }
 
 function startDraw() {
+  stopPrefetch();
   D.active = true; D.wps = []; D.legs = []; D.legReq = []; D.fixed = []; D.warn = '';
   document.body.classList.add('drawing');
   $('viewTools').hidden = true; $('drawTools').hidden = false;
