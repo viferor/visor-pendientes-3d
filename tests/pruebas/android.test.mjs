@@ -21,17 +21,38 @@ const esperarArranque = async (a2, ms = 2500) => {
   return a2.S.name;
 };
 
-await test('O1', 'La web recoge sola el .gpx que le pasa Android y lo carga', async () => {
-  let pedidos = 0;
-  const app2 = loadApp({ AndroidGpx: { pendiente: () => (++pedidos === 3 ? GPX_PRUEBA : null) } });
+await test('O1', 'La web recoge el .gpx que le pasa Android y lo carga', async () => {
+  // Se espera a que termine el arranque (que carga el ejemplo o tu último track) y solo entonces
+  // se simula la llegada del archivo, que es lo que pasa cuando Android lo lee y llama a la app.
+  const app2 = loadApp({ AndroidGpx: { pendiente: () => null } });
   const a2 = app2.api();
-  // Se le da tiempo a que llegue el archivo (el puente pregunta cada 500 ms, hasta 20 veces)
+  await esperarArranque(a2);
+  const nombreAntes = a2.S.name;
+  let consultas = 0;
+  app2.sandbox.AndroidGpx.pendiente = () => { consultas++; return GPX_PRUEBA; };
+  a2.cargarGpxNativo();
   const t0 = Date.now();
-  while (a2.S.name !== 'Recibido de Android' && Date.now() - t0 < 6000) await new Promise(r => setTimeout(r, 100));
+  while (a2.S.name !== 'Recibido de Android' && Date.now() - t0 < 5000) await new Promise(r => setTimeout(r, 50));
   eq(a2.S.name, 'Recibido de Android', 'nombre del track recibido');
   eq(a2.S.pts.length, 2, 'puntos cargados');
-  assert(pedidos >= 3, 'debería haber preguntado varias veces hasta que llegara el archivo');
-  return { detail: `cargado solo, tras ${pedidos} consultas al puente: «${a2.S.name}» con ${a2.S.pts.length} puntos` };
+  assert(a2.S.segs.length > 0, 'el recorrido recibido debe quedar analizado');
+  assert(consultas >= 1, 'debería haber consultado el puente');
+  return { detail: `estando cargado «${nombreAntes}», llegó el archivo y quedó «${a2.S.name}» (${a2.S.pts.length} puntos, ${consultas} consultas al puente)` };
+});
+
+await test('O1b', 'El .gpx que llega mientras la app aún arranca no lo pisa el track de ejemplo', async () => {
+  // Esta es la carrera real: Android entrega el archivo en cuanto abre la app, mientras todavía se
+  // está cargando el ejemplo o el último track guardado. El archivo debe ganar siempre.
+  const inicio = Date.now();
+  let consultas = 0;
+  const app2 = loadApp({ AndroidGpx: { pendiente: () => { consultas++; return Date.now() - inicio > 300 ? GPX_PRUEBA : null; } } });
+  const a2 = app2.api();
+  const t0 = Date.now();
+  while (a2.S.name !== 'Recibido de Android' && Date.now() - t0 < 10000) await new Promise(r => setTimeout(r, 100));
+  eq(a2.S.name, 'Recibido de Android', 'el archivo recibido debe ganar al track de ejemplo');
+  eq(a2.S.pts.length, 2, 'puntos del archivo recibido');
+  assert(consultas >= 2, 'el sondeo del arranque debería haber preguntado varias veces: ' + consultas);
+  return { detail: `el archivo llegó en el arranque y ganó: «${a2.S.name}» con ${a2.S.pts.length} puntos (${consultas} consultas)` };
 });
 
 await test('O2', 'Si el archivo recibido no es un GPX válido, se avisa y el aviso no se pierde', async () => {
@@ -80,4 +101,33 @@ await test('O4', 'El manifiesto de Android declara la apertura de .gpx y el puen
   assert(/window\.AndroidGpx/.test(web), 'la web no consulta el puente de Android');
   assert(/cargarGpxNativo\(\);/.test(web), 'la web no llama a la carga de GPX nativo al arrancar');
   return { detail: 'manifiesto (VIEW + SEND + extensión), MainActivity (puente, onNewIntent y comprobación .gpx) y web (consulta al arrancar)' };
+});
+
+/* ---------------- P: áreas seguras (edge-to-edge de Android 15) ----------------
+   El plugin SystemBars viene DENTRO del núcleo de Capacitor 8 y está activado por defecto:
+   escucha los insets del sistema e inyecta --safe-area-inset-* en el documento (insetsHandling
+   «css»). Por eso la app se aparta de las barras sin ningún plugin externo ni APK nueva; lo que
+   NO puede faltar es el viewport-fit=cover ni el uso de esas variables. Estas pruebas lo vigilan. */
+
+await test('P1', 'La app está preparada para las áreas seguras del sistema (edge-to-edge)', () => {
+  const web = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
+  assert(/name="viewport"[^>]*viewport-fit=cover/.test(web), 'falta viewport-fit=cover: sin él Capacitor pone padding nativo y no inyecta las variables');
+  const cfg = JSON.parse(fs.readFileSync(path.join(REPO, 'capacitor.config.json'), 'utf8'));
+  eq(cfg.plugins?.SystemBars?.insetsHandling, 'css', 'insetsHandling debe ser «css» para que se inyecten --safe-area-inset-*');
+  const usos = (web.match(/--safe-area-inset-(top|right|bottom|left)/g) || []);
+  assert(new Set(usos).size >= 3, 'la interfaz debería usar las variables de área segura en varios bordes: ' + JSON.stringify([...new Set(usos)]));
+  for (const borde of ['top', 'bottom']) {
+    assert(usos.some(u => u.endsWith(borde)), 'no se usa el área segura de «' + borde + '»');
+  }
+  return { detail: `viewport-fit=cover, insetsHandling=${cfg.plugins.SystemBars.insetsHandling}, ${usos.length} usos de las variables (${[...new Set(usos)].join(', ')})` };
+});
+
+await test('P2', 'Los colores de las barras del sistema casan con el fondo de la app', () => {
+  const cfg = JSON.parse(fs.readFileSync(path.join(REPO, 'capacitor.config.json'), 'utf8'));
+  const web = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
+  const fondoWeb = /--panel-solid:\s*(#[0-9a-fA-F]{6})/.exec(web);
+  assert(fondoWeb, 'no se encuentra el color de fondo en el CSS');
+  eq(cfg.android?.backgroundColor?.toLowerCase(), fondoWeb[1].toLowerCase(), 'el fondo de la app Android debería ser el mismo que el de la web');
+  assert(/SystemBars'\)[^)]*setStyle/.test(web) || /plugin\('SystemBars'\)/.test(web), 'la app ajusta el estilo de las barras (iconos claros sobre fondo oscuro)');
+  return { detail: `fondo ${cfg.android.backgroundColor} en ambos lados y estilo de barras ajustado desde la app` };
 });

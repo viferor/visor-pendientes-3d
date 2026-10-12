@@ -11,3 +11,5 @@ keystore.properties
 # Compilación local
 Pendientes3D-*.apk
 compilar-apk.log
+# Informe que genera la ejecución de las pruebas
+tests/resultados.json

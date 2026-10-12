@@ -19,9 +19,13 @@ for (const r of resultados) {
 const cuenta = resumen();
 console.log('\nResumen: ' + JSON.stringify(cuenta));
 const fallos = resultados.filter(r => r.status === 'FALLA');
+// El informe se guarda junto a las pruebas (no en el directorio desde el que se lance), y si no se
+// puede escribir se avisa: antes fallaba en silencio y parecía que no había informe.
 try {
-  fs.writeFileSync(path.join(process.cwd(), 'tests', 'resultados.json'), JSON.stringify({ fecha: new Date().toISOString(), cuenta, resultados }, null, 2));
-} catch (e) { /* el informe es opcional */ }
+  fs.writeFileSync(path.join(import.meta.dirname, 'resultados.json'), JSON.stringify({ fecha: new Date().toISOString(), cuenta, resultados }, null, 2));
+} catch (e) {
+  console.error('Aviso: no se pudo escribir tests/resultados.json (' + e.message + ')');
+}
 if (fallos.length) {
   console.error(`\n${fallos.length} prueba(s) han fallado.`);
   process.exit(1);
