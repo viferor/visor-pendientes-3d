@@ -632,7 +632,8 @@ const mapReady = new Promise(res => map.on('load', () => {
     S.sel = i;
     PUNTO_TRACK.setLngLat([S.pts[i].lon, S.pts[i].lat]).addTo(map);
     drawMarker(i, true);
-    if (!quieto) flyToIdx(i, true);
+    // La cámara solo se mueve si tienes activado «Llevar la vista al punto marcado en el perfil»
+    if (!quieto && prefs.follow) flyToIdx(i, true);
     return i;
   };
   res();
