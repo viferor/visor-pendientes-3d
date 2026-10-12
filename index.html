@@ -2603,9 +2603,28 @@ function infoEncuadre() {
     const cont = map.getContainer();
     const libre = cont.getBoundingClientRect();
     const partes = [
-      `Ventana ${window.innerWidth}×${window.innerHeight} · mapa ${Math.round(libre.width)}×${Math.round(libre.height)} · cliente ${cont.clientWidth}×${cont.clientHeight}`,
+      `Ventana ${window.innerWidth}×${window.innerHeight} · visual ${window.visualViewport ? Math.round(window.visualViewport.width) + '×' + Math.round(window.visualViewport.height) : '—'}`,
+      `Documento ${document.documentElement.clientWidth}×${document.documentElement.clientHeight} · scroll ${document.documentElement.scrollWidth}×${document.documentElement.scrollHeight}`,
+      `Cuerpo ${document.body.clientWidth}×${document.body.clientHeight} · mapa ${Math.round(libre.width)}×${Math.round(libre.height)} en ${Math.round(libre.left)},${Math.round(libre.top)}`,
       `Cámara: centro ${c.lng.toFixed(4)}, ${c.lat.toFixed(4)} · zoom ${map.getZoom().toFixed(2)}`
     ];
+    // Si algo es más ancho que la ventana, el navegador deja una franja a la derecha: se busca el culpable
+    const anchoVentana = document.documentElement.clientWidth;
+    let culpable = null, mayor = anchoVentana + 1;
+    for (const el of document.querySelectorAll('body *')) {
+      const r = el.getBoundingClientRect();
+      if (r.width > mayor && r.height > 0) { mayor = r.width; culpable = el; }
+    }
+    if (culpable) {
+      partes.push(`OJO: hay algo más ancho que la ventana (${Math.round(mayor)} px): ${culpable.tagName}${culpable.id ? '#' + culpable.id : ''}${culpable.className && typeof culpable.className === 'string' ? '.' + culpable.className.split(' ')[0] : ''}`);
+    }
+    // Elementos que podrían quedarse cortos y dejar una franja sin pintar
+    for (const sel of ['.maplibregl-canvas', '#profile', '#player', '#live', '#panel', '#legend']) {
+      const el2 = document.querySelector(sel);
+      if (!el2) continue;
+      const r = el2.getBoundingClientRect();
+      partes.push(`  ${sel}: ${Math.round(r.width)}×${Math.round(r.height)} en ${Math.round(r.left)},${Math.round(r.top)}${el2.hidden ? ' (oculto)' : ''}`);
+    }
     if (e) {
       partes.push(`Huecos usados: arriba ${e.huecos.arriba}, abajo ${e.huecos.abajo}, izq ${e.huecos.izquierda}, der ${e.huecos.derecha}`);
       partes.push(`Último encuadre: ${e.puntos} puntos · centro ${e.centro[0]}, ${e.centro[1]} · zoom ${e.zoom}`);
