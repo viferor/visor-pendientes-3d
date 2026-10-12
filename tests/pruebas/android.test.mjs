@@ -1,6 +1,6 @@
 // Pruebas de la integración con Android: apertura de un .gpx enviado desde otra aplicación.
 // Se ejecutan con: npm test
-import { test, eq, assert, slice, fs, path, REPO, loadApp, loadSW } from '../comun.mjs';
+import { test, eq, near, assert, slice, fs, path, REPO, loadApp, loadSW } from '../comun.mjs';
 import { rutaSintetica } from '../comun.mjs';
 
 const GPX_PRUEBA = `<?xml version="1.0" encoding="UTF-8"?>
@@ -159,7 +159,8 @@ await test('Q1', 'Las atribuciones salen cerradas por defecto y abajo a la izqui
 await test('Q2', 'El panel plegado se queda solo con el botón «+»', () => {
   const web = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
   assert(/#panel\.plegado h1\{display:none\}/.test(web), 'plegado, el título del panel debería ocultarse');
-  assert(/#panel\.plegado\{width:auto\}/.test(web), 'plegado, el panel debería encogerse');
+  assert(/#panel\.plegado\{[^}]*width:auto/.test(web), 'plegado, el panel debería encogerse');
+  assert(/#panel\.plegado\{[^}]*background:none/.test(web), 'plegado, el recuadro del panel debería desaparecer (solo el botón)');
   const app2 = loadApp();
   const panel = app2.el('panel'), cuerpo = app2.el('body'), btn = app2.el('collapse');
   const abrirCerrar = () => {
@@ -200,6 +201,59 @@ await test('Q4', 'Ajustes muestra la versión y permite buscar actualización', 
   const v = /const VERSION = '(v\d+)'/.exec(fs.readFileSync(path.join(REPO, 'sw.js'), 'utf8'));
   assert(v, 'no se pudo leer la versión de sw.js');
   return { detail: `leída la versión ${v[1]} del sw.js; en Ajustes hay versión y botón, y se busca sola al arrancar y al volver a la app` };
+});
+
+/* ---------------- R: encuadre de la ruta (el móvil se quedaba mirando a otro sitio) ---------------- */
+
+await test('R-encuadre', 'Al cargar una ruta se pide encuadrarla y queda registrado', async () => {
+  const app2 = loadApp();
+  const a2 = app2.api();
+  const llamadas = [];
+  app2.mapStub.fitBounds = (b, o) => { llamadas.push({ dur: o && o.duration, pad: o && o.padding }); return app2.mapStub; };
+  // Se espera a que el arranque de la app termine (carga el ejemplo y lo encuadra): si no, esa carga
+  // escribiría su propio encuadre encima del que queremos comprobar.
+  const t0 = Date.now();
+  let ultimo = null, desde = Date.now();
+  while (Date.now() - t0 < 6000) {
+    const actual = a2.S.name;
+    if (actual && actual !== ultimo) { ultimo = actual; desde = Date.now(); }
+    else if (actual && Date.now() - desde > 400) break;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  a2.S.ultimoEncuadre = null;
+  llamadas.length = 0;
+  const lejana = [{ lat: 40.0, lon: -4.0, ele: 600, t: NaN }, { lat: 40.01, lon: -4.0, ele: 620, t: NaN }];
+  await a2.loadTrack('Lejana', lejana, false);
+  await new Promise(r => setTimeout(r, 300));
+  assert(llamadas.length >= 1, 'debería haberse pedido encuadrar la ruta al cargarla');
+  assert(llamadas[0].dur === 1600, 'el encuadre inicial debería ir animado: ' + llamadas[0].dur);
+  const u = a2.S.ultimoEncuadre;
+  assert(u && u.puntos === 2, 'debería quedar registrado el encuadre de ESTA ruta: ' + JSON.stringify(u));
+  eq(u.centro[0], -4, 'centro en longitud');
+  near(u.centro[1], 40.005, 0.0005, 'centro en latitud');
+  return { detail: `fitBounds con ${llamadas[0].dur} ms de animación y centro ${u.centro.join(', ')} (registrado para poder comprobarlo en el móvil)` };
+});
+
+await test('R-encuadre-2', 'Si el encuadre se queda a medias, se repite sin animación', async () => {
+  const app2 = loadApp();
+  const a2 = app2.api();
+  const llamadas = [];
+  app2.mapStub.fitBounds = (b, o) => { llamadas.push(o && o.duration); return app2.mapStub; };
+  const lejana = [{ lat: 40.0, lon: -4.0, ele: 600, t: NaN }, { lat: 40.01, lon: -4.0, ele: 620, t: NaN }];
+  await a2.loadTrack('Lejana', lejana, false);
+  await new Promise(r => setTimeout(r, 300));
+  const antes = llamadas.length;
+  // 1) El usuario toca el mapa con el encuadre aún pendiente → se repite sin animación
+  a2.repetirEncuadreSiToca();
+  assert(llamadas.length === antes + 1, 'debería repetirse el encuadre al tocar el mapa');
+  eq(llamadas[llamadas.length - 1], 0, 'la repetición debe ser sin animación (para que no se corte otra vez)');
+  // 2) La vista no se parece a lo pedido (la animación se cortó) → también se repite
+  a2.fitRoute(true);
+  const trasFit = llamadas.length;
+  app2.mapStub.getBounds = () => ({ getWest: () => -70, getEast: () => -60, getSouth: () => 10, getNorth: () => 20 });
+  a2.revisarEncuadrePendiente();
+  assert(llamadas.length === trasFit + 1, 'si la vista quedó lejos de la ruta, debería reencuadrarse al terminar el movimiento');
+  return { detail: `repite el encuadre al tocar el mapa y al detectar que la vista quedó en otro sitio (${llamadas.length} peticiones en total, la última sin animación)` };
 });
 
 await test('Q5', 'Si hay versión nueva se avisa y se ofrece recargar (sin recargar sola)', async () => {
