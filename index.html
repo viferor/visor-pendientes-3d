@@ -48,6 +48,7 @@ body.no-profile{--profile-h:0px}
 #panel h1{font:700 22px/1 var(--display);letter-spacing:.02em;margin:0;text-transform:uppercase;flex:1}
 #panel h1 span{color:var(--paint)}
 #collapse{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;width:30px;height:30px;cursor:pointer;font:600 16px/1 var(--body)}
+#infoEncuadre2{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;width:30px;height:30px;cursor:pointer;font:600 14px/1 var(--display)}
 /* Panel plegado: se queda solo el botón «+», sin el título ni el recuadro, para no tapar el mapa */
 #panel.plegado{width:auto;background:none;backdrop-filter:none;-webkit-backdrop-filter:none;border-color:transparent;overflow:visible}
 #panel.plegado header{padding:0;border-bottom:0;justify-content:flex-end}
@@ -221,6 +222,7 @@ body.layout .movable *{pointer-events:none}
 <aside id="panel" aria-label="Controles">
   <header>
     <h1 id="panelTitle">Pendientes <span>3D</span></h1>
+    <button id="infoEncuadre2" title="Diagnóstico: qué zona queda libre y hasta dónde se ha encuadrado">i</button>
     <button id="collapse" aria-expanded="true" aria-controls="body" title="Plegar panel">–</button>
   </header>
   <div id="body">
@@ -2548,13 +2550,39 @@ async function buscarActualizacion(manual) {
   return false;
 }
 $('buscarAct').addEventListener('click', () => buscarActualizacion(true));
-// Diagnóstico: dice si se ha pedido encuadrar la ruta y con qué centro y caja. Sirve para saber si
-// el problema de «no se mueve la vista» está en la petición de encuadre o en el mapa.
-$('infoEncuadre').addEventListener('click', () => {
+// Diagnóstico: mide la ventana, la zona libre de interfaz y el último encuadre. Sirve para saber si
+// el problema de «no se mueve la vista» está en el encuadre o en el hueco que dejan los paneles.
+function infoEncuadre() {
   const e = S.ultimoEncuadre;
-  if (!e) { estadoAct('Todavía no se ha encuadrado ninguna ruta.', true); return; }
-  estadoAct(`Encuadre: ${e.puntos} puntos, centro ${e.centro[0]}, ${e.centro[1]} · caja ${e.caja.join(' / ')} · animado: ${e.animado ? 'sí' : 'no'}`);
-});
+  const panel = $('panel').getBoundingClientRect(), prof = $('profile').getBoundingClientRect();
+  const c = map.getCenter();
+  const pad = {
+    arriba: window.innerWidth > 640 ? 70 : Math.round(panel.bottom + 20),
+    abajo: Math.round(prof.height + 50),
+    izquierda: window.innerWidth > 640 ? Math.round(panel.right + 40) : 30, derecha: 70
+  };
+  const libre = map.getContainer().getBoundingClientRect();
+  const libreAlto = Math.round(libre.height - pad.arriba - pad.abajo), libreAncho = Math.round(libre.width - pad.izquierda - pad.derecha);
+  const partes = [
+    `Ventana ${window.innerWidth}×${window.innerHeight} · mapa ${Math.round(libre.width)}×${Math.round(libre.height)}`,
+    `Huecos: arriba ${pad.arriba}, abajo ${pad.abajo}, izq ${pad.izquierda}, der ${pad.derecha}`,
+    `Zona libre para la ruta: ${libreAncho}×${libreAlto}` + (libreAlto < 60 || libreAncho < 60 ? '  ← ¡DEMASIADO PEQUEÑA!' : ''),
+    `Perfil: alto ${Math.round(prof.height)} · panel: abajo ${Math.round(panel.bottom)} · perfil visible: ${!$('profile').hidden}`,
+    `Cámara: centro ${c.lng.toFixed(4)}, ${c.lat.toFixed(4)} · zoom ${map.getZoom().toFixed(2)}`
+  ];
+  partes.push(e
+    ? `Último encuadre: ${e.puntos} puntos · centro ${e.centro[0]}, ${e.centro[1]} · caja ${e.caja.join(' / ')} · animado: ${e.animado ? 'sí' : 'no'}`
+    : 'Último encuadre: ninguno todavía');
+  const el = $('actEstado');
+  el.hidden = false;
+  el.classList.remove('err');
+  el.innerHTML = '';
+  for (const t of partes) { const p = document.createElement('div'); p.textContent = t; el.appendChild(p); }
+}
+for (const id of ['infoEncuadre', 'infoEncuadre2']) {
+  const b = $(id);
+  if (b) b.addEventListener('click', infoEncuadre);
+}
 
 // También en la app Android cuando carga la web desde Vercel (no desde la copia local)
 if ('serviceWorker' in navigator && location.protocol.startsWith('http') && !(NATIVE && location.hostname === 'localhost')) {
