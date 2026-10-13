@@ -362,6 +362,9 @@ await test('T-catastro', 'El reborde del Catastro marca público en verde y part
   assert(/addSource\('catastroRuta'/.test(web), 'el reborde debería usar la fuente «catastroRuta»');
   assert(!/addSource\('catastro', \{ type: 'geojson'/.test(web), 'no se puede reutilizar el nombre «catastro» (es la capa raster de parcelas)');
   assert(/CAT_COLORES = \{ publico: '#2ecc71', particular: '#e74c3c' \}/.test(web), 'faltan los colores verde (público) y rojo (particular)');
+  assert(/const DESVIO_CATASTRO = \d+/.test(web), 'falta la separación de los trazos respecto al track');
+  assert(/lado: 'izq'/.test(web) && /lado: 'der'/.test(web), 'deberían dibujarse los dos trazos, uno a cada lado');
+  assert(/desplazarLinea\(coords, -DESVIO_CATASTRO\)/.test(web) && /desplazarLinea\(coords, DESVIO_CATASTRO\)/.test(web), 'los trazos deberían salir de los vértices del track desplazados a cada lado');
   assert(/id="ovCatRuta"/.test(web), 'falta el interruptor del reborde del Catastro en Ajustes');
   // El reborde se dibuja antes que el track y el track se sube encima
   assert(/id: 'catastroFranja'[\s\S]{0,300}subirTrackSobreCatastro\(\)/.test(web), 'el reborde debería crearse antes de subir el track encima');
@@ -430,12 +433,23 @@ await test('T-catastro-2', 'La línea del Catastro se pinta según las respuesta
   const colores = new Set(features.map(f => f.properties.color));
   assert(colores.has(a2.CAT_COLORES.publico), 'debería haber tramos verdes (dominio público): ' + [...colores].join(', '));
   assert(colores.has(a2.CAT_COLORES.particular), 'debería haber tramos rojos (particulares): ' + [...colores].join(', '));
-  // El reborde reutiliza la MISMA geometría que el track (mismos puntos), así que va pegado por definición
+  // El trazo del Catastro sale de los vértices del track desplazados unos metros: son los mismos
+  // puntos, así que copia su recorrido y queda a unos píxeles, ni encima ni debajo.
   const geoTrack = app2.mapStub._setData.filter(([id]) => id === 'route').pop();
-  const coordsTrack = new Set(((geoTrack && geoTrack[1].features) || []).flatMap(f => f.geometry.coordinates.map(c => c[0].toFixed(6) + ',' + c[1].toFixed(6))));
-  const propias = features.flatMap(f => f.geometry.coordinates.map(c => c[0].toFixed(6) + ',' + c[1].toFixed(6)));
-  const ajenas = propias.filter(c => !coordsTrack.has(c));
-  assert(ajenas.length === 0, 'el reborde debería usar los mismos puntos que el track, y hay ' + ajenas.length + ' que no coinciden');
+  const coordsTrack = new Set(((geoTrack && geoTrack[1].features) || []).flatMap(f => f.geometry.coordinates.map(c => c[0].toFixed(4) + ',' + c[1].toFixed(4))));
+  const lados = new Set(features.map(f => f.properties.lado));
+  assert(lados.has('izq') && lados.has('der'), 'debería haber trazos a los dos lados: ' + [...lados].join(', '));
+  // El desvío es de metros (no kilómetros): cada vértice queda a menos de 0,0005° del del track
+  const ajenos = features.flatMap(f => f.geometry.coordinates).filter(c => {
+    const k = c[0].toFixed(4) + ',' + c[1].toFixed(4);
+    if (coordsTrack.has(k)) return false;
+    // Se comprueba que hay un punto del track a menos de ~50 m de este vértice
+    return ![...coordsTrack].some(t => {
+      const [lo, la] = t.split(',').map(Number);
+      return Math.abs(lo - c[0]) < 0.0006 && Math.abs(la - c[1]) < 0.0006;
+    });
+  });
+  assert(ajenos.length === 0, 'cada vértice del trazo debería estar a unos metros del track, y hay ' + ajenos.length + ' lejos');
   assert(n > 0, 'debería haber consultado el servicio del Catastro');
   const resumen = a2.CATR.ultimo;
   assert(resumen && resumen.publico > 0 && resumen.particular > 0, 'el resumen debería contar ambos tipos: ' + JSON.stringify(resumen));

@@ -682,17 +682,17 @@ const mapReady = new Promise(res => map.on('load', () => {
     } });
   map.addLayer({ id: 'hover-pt', type: 'circle', source: 'hover',
     paint: { 'circle-radius': 7, 'circle-color': '#fff', 'circle-stroke-width': 3, 'circle-stroke-color': '#111' } });
-  // Reborde del Catastro: se dibuja DEBAJO del track, con LA MISMA geometría que el track (los mismos
-  // segmentos), solo que más ancho y con los extremos y uniones redondeados. Así sobresale unos píxeles
-  // por los dos lados y rodea el trazado: verde si el tramo va por dominio público y rojo si va por
-  // parcela particular. El track (pendientes) va por encima y manda siempre: el reborde solo lo delimita.
+  // Líneas del Catastro: copian EXACTAMENTE el recorrido del track (los mismos puntos, desplazados
+  // unos metros a cada lado, que en pantalla son unos pocos píxeles), son finas y van por encima del
+  // mapa. Verde si el tramo va por dominio público y rojo si va por parcela particular. El track manda:
+  // esto solo lo delimita.
   // OJO: la fuente se llama 'catastroRuta' y no 'catastro', que ya es la capa raster de parcelas.
   map.addSource('catastroRuta', { type: 'geojson', data: empty });
-  const anchoCat = ['interpolate', ['linear'], ['zoom'], 9, 13, 13, 17, 16, 22];
+  const grosorCat = ['interpolate', ['linear'], ['zoom'], 9, 1.5, 13, 2, 16, 2.5];
   map.addLayer({ id: 'catastroFranja', type: 'line', source: 'catastroRuta',
     layout: { 'line-cap': 'round', 'line-join': 'round' },
-    paint: { 'line-color': ['get', 'color'], 'line-width': anchoCat, 'line-opacity': 0.95 } });
-  // El track, encima del reborde
+    paint: { 'line-color': ['get', 'color'], 'line-width': grosorCat, 'line-opacity': 1 } });
+  // El track, encima de las líneas del Catastro
   subirTrackSobreCatastro();
   // Si MapLibre falla al mover la cámara (o cualquier otra cosa), que se vea en el estado en vez de
   // quedarse en silencio: es lo que impedía saber por qué no se encuadraba en el móvil.
@@ -2582,6 +2582,9 @@ function interpretarReferencia(rc) {
 // público (9000+) y roja donde es particular. Los tramos sin referencia no se pintan.
 const CATR = { cache: new Map(), celdas: new Map(), pidiendo: false, generacion: 0, avisado: false, ultimo: null, consultas: 0, desdeCache: 0 };
 const CAT_COLORES = { publico: '#2ecc71', particular: '#e74c3c' };
+// Separación de los trazos del Catastro respecto al eje del track, en metros. Unos 14 m son unos pocos
+// píxeles en las distancias de zoom habituales de la app (a z14, 1 px ≈ 5,5 m en esta latitud).
+const DESVIO_CATASTRO = 14;
 function claveCatastro(lon, lat) { return lon.toFixed(4) + ',' + lat.toFixed(4); }   // ~11 m
 // Celdas de varios tamaños (rejilla alineada) alrededor de cada punto consultado. La respuesta del
 // Catastro identifica la PARCELA ENTERA, así que si una parcela ocupa varios kilómetros no tiene
@@ -2734,9 +2737,18 @@ async function recorrerCatastro() {
     else if (tipo === 'particular') particular++;
     else sin++;
     if (tipo !== 'publico' && tipo !== 'particular') continue;
+    // Un trazo fino a cada lado, con los MISMOS vértices del track desplazados unos metros en
+    // perpendicular: así copia su recorrido (curvas y giros incluidos) y queda a unos píxeles del
+    // trazado, sin encima ni debajo.
+    const coords = S.pts.slice(g.i0, g.i1 + 1).map(p => [p.lon, p.lat]);
+    const color = CAT_COLORES[tipo];
     features.push({
-      type: 'Feature', properties: { color: CAT_COLORES[tipo] },
-      geometry: { type: 'LineString', coordinates: S.pts.slice(g.i0, g.i1 + 1).map(p => [p.lon, p.lat]) }
+      type: 'Feature', properties: { color, lado: 'izq' },
+      geometry: { type: 'LineString', coordinates: desplazarLinea(coords, -DESVIO_CATASTRO) }
+    });
+    features.push({
+      type: 'Feature', properties: { color, lado: 'der' },
+      geometry: { type: 'LineString', coordinates: desplazarLinea(coords, DESVIO_CATASTRO) }
     });
   }
   map.getSource('catastroRuta').setData({ type: 'FeatureCollection', features });
