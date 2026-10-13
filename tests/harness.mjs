@@ -495,7 +495,7 @@ export function loadApp({ fetchImpl, imageMode, AndroidGpx } = {}) {
   queryWms, catastroHtml, queryPoint, loadGpxText, cargarGpxNativo, indiceMasCercano, initToqueTrack,
   leerVersionPublicada, buscarActualizacion, mostrarVersion, huecosMapa, encuadrarRuta, infoEncuadre,
   speedFromSlider, fijarVelocidad, catastroLinea, limpiarCatastro, interpretarReferencia, muestrasCatastro,
-  desplazarLinea, claveCatastro, CATR, CAT_COLORES, refreshDraw };
+  desplazarLinea, claveCatastro, CATR, CAT_COLORES, refreshDraw, pintarLineasCatastro, desvioCatastro, metrosPorPixel };
 for (const n of ['WMSOV','MAP_NAMES','offlineBreakdown','offlineTileKind','OFFLINE_VT','OFM_MAXZOOM','TILE_CACHE_MAX','tileCacheSize','tileCacheKeys','stopPrefetch','repetirEncuadreSiToca','revisarEncuadrePendiente']) {
   try { globalThis.__api[n] = eval(n); } catch (e) { globalThis.__api[n] = undefined; }
 }

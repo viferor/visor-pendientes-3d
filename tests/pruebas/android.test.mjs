@@ -362,9 +362,14 @@ await test('T-catastro', 'El reborde del Catastro marca público en verde y part
   assert(/addSource\('catastroRuta'/.test(web), 'el reborde debería usar la fuente «catastroRuta»');
   assert(!/addSource\('catastro', \{ type: 'geojson'/.test(web), 'no se puede reutilizar el nombre «catastro» (es la capa raster de parcelas)');
   assert(/CAT_COLORES = \{ publico: '#2ecc71', particular: '#e74c3c' \}/.test(web), 'faltan los colores verde (público) y rojo (particular)');
-  assert(/const DESVIO_CATASTRO = \d+/.test(web), 'falta la separación de los trazos respecto al track');
+  // La separación va en PÍXELES de pantalla y se recalculate al cambiar el zoom: así las líneas se
+  // pegan al track al acercar, que es lo que se pidió.
+  assert(/const CAT_PIXELES = [\d.]+/.test(web), 'falta la separación en píxeles');
+  assert(/function metrosPorPixel\(\)/.test(web) && /function desvioCatastro\(\)/.test(web), 'debería convertirse la separación en píxeles a metros según el zoom');
+  assert(/map\.on\('zoomend', \(\) => \{ pintarLineasCatastro\(\); \}\)/.test(web), 'al cambiar el zoom deberían repintarse los trazos, pegados al track');
+  assert(/function pintarLineasCatastro\(\)/.test(web), 'falta la función que pinta los trazos (reutilizable sin consultar de nuevo)');
   assert(/lado: 'izq'/.test(web) && /lado: 'der'/.test(web), 'deberían dibujarse los dos trazos, uno a cada lado');
-  assert(/desplazarLinea\(coords, -DESVIO_CATASTRO\)/.test(web) && /desplazarLinea\(coords, DESVIO_CATASTRO\)/.test(web), 'los trazos deberían salir de los vértices del track desplazados a cada lado');
+  assert(/desplazarLinea\(coords, -desvio\)/.test(web) && /desplazarLinea\(coords, desvio\)/.test(web), 'los trazos deberían salir de los vértices del track desplazados a cada lado');
   assert(/id="ovCatRuta"/.test(web), 'falta el interruptor del reborde del Catastro en Ajustes');
   // El reborde se dibuja antes que el track y el track se sube encima
   assert(/id: 'catastroFranja'[\s\S]{0,300}subirTrackSobreCatastro\(\)/.test(web), 'el reborde debería crearse antes de subir el track encima');
@@ -531,6 +536,29 @@ await test('T-catastro-4', 'La caché evita repetir consultas dentro de la misma
   await esperarFin();
   assert(n === antes, `la segunda pasada no debería consultar nada más: ${antes} → ${n}`);
   return { detail: `${(total / 1000).toFixed(1)} km: ${dados.puntos} muestras con ${antes} consultas la primera vez (${(dados.puntos / antes).toFixed(0)}× menos) y ninguna en la segunda` };
+});
+
+await test('T-catastro-5', 'La separación de los trazos se mide en píxeles, así que se pegan al acercar', () => {
+  const app2 = loadApp();
+  const a2 = app2.api();
+  const pixeles = (zoom, lat) => {
+    app2.mapStub.getZoom = () => zoom;
+    app2.mapStub.getCenter = () => ({ lng: -3.5, lat });
+    return a2.desvioCatastro() / a2.metrosPorPixel();
+  };
+  // Dentro del rango de uso (z9-z17), la separación en píxeles es la misma a cualquier zoom
+  for (const z of [10, 11, 12, 13, 14, 15, 16, 17]) {
+    near(pixeles(z, 37), 3.5, 0.2, `a zoom ${z} la separación debería ser de 3,5 px`);
+  }
+  // Y en metros se reduce al acercar: es lo que hace que se peguen al track
+  app2.mapStub.getZoom = () => 11; const m11 = a2.desvioCatastro();
+  app2.mapStub.getZoom = () => 14; const m14 = a2.desvioCatastro();
+  app2.mapStub.getZoom = () => 17; const m17 = a2.desvioCatastro();
+  assert(m17 < m14 && m14 < m11, `en metros, la separación debería reducirse al acercar: z11 ${m11.toFixed(1)}, z14 ${m14.toFixed(1)}, z17 ${m17.toFixed(1)}`);
+  // A zoom 17 la separación sigue siendo de al menos un píxel: las líneas no se meten dentro del track
+  near(m17 / a2.metrosPorPixel(), 3.5, 0.3, 'a zoom 17 la separación debería seguir siendo visible');
+  app2.mapStub.getZoom = () => 13;
+  return { detail: `3,5 px de separación en todo el rango (${m11.toFixed(1)} m a z11 → ${m14.toFixed(1)} m a z14 → ${m17.toFixed(2)} m a z17): se pegan al acercar` };
 });
 
 await test('Q5', 'Si hay versión nueva se avisa y se ofrece recargar (sin recargar sola)', async () => {

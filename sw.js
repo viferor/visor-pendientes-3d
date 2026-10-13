@@ -3,7 +3,7 @@
 // - Las teselas de satélite y relieve que ya has visto se guardan para reutilizarlas.
 // - Los mapas de las rutas guardadas para sin cobertura van en una caché aparte que no se recorta.
 // - El cálculo de rutas siempre va por red.
-const VERSION = 'v35';
+const VERSION = 'v36';
 const APP_CACHE = `pendientes3d-app-${VERSION}`;
 const TILE_CACHE = 'pendientes3d-tiles';
 const FONT_CACHE = 'pendientes3d-fonts';

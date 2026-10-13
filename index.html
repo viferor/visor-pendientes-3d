@@ -1162,6 +1162,10 @@ function updateLabels() {
     S.labels.set(i, new maplibregl.Marker({ element: el, anchor: 'bottom', offset: [0, -6] }).setLngLat(g.mid).addTo(map));
   }
 }
+// La posición de los trazos del Catastro se recalcula en cada cambio de zoom (para que sigan pegados
+// al track a cualquier escala), y al cambiar de ruta se olvida la clasificación anterior.
+map.on('zoomend', () => { pintarLineasCatastro(); });
+
 map.on('moveend', () => {
   if (PLAY.on) { const t = performance.now(); if (t - PLAY.labelsAt < 700) return; PLAY.labelsAt = t; }
   updateLabels();
@@ -2582,9 +2586,20 @@ function interpretarReferencia(rc) {
 // público (9000+) y roja donde es particular. Los tramos sin referencia no se pintan.
 const CATR = { cache: new Map(), celdas: new Map(), pidiendo: false, generacion: 0, avisado: false, ultimo: null, consultas: 0, desdeCache: 0 };
 const CAT_COLORES = { publico: '#2ecc71', particular: '#e74c3c' };
-// Separación de los trazos del Catastro respecto al eje del track, en metros. Unos 14 m son unos pocos
-// píxeles en las distancias de zoom habituales de la app (a z14, 1 px ≈ 5,5 m en esta latitud).
-const DESVIO_CATASTRO = 14;
+// Separación de los trazos del Catastro respecto al eje del track, EN PÍXELES de pantalla: así al
+// acercar el zoom las líneas se van pegando al track y queda natural, en vez de separarse más y más.
+// A zoom 14, un píxel son unos 7 m en esta latitud.
+const CAT_PIXELES = 3.5;
+function metrosPorPixel() {
+  const lat = (map.getCenter && map.getCenter().lat) || 37;
+  return 156543.03392 * Math.cos(lat * Math.PI / 180) / (2 ** map.getZoom());
+}
+function desvioCatastro() {
+  // En píxeles de pantalla, para que al acercar las líneas se peguen al track en vez de separarse más.
+  // Sin topes: la separación es constante en pantalla a cualquier zoom (a z8 son ~200 m, que a esa
+  // escala es lo correcto; a z17 son 1,7 m). Solo se evita el cero por si acaso.
+  return Math.max(0.01, CAT_PIXELES * metrosPorPixel());
+}
 function claveCatastro(lon, lat) { return lon.toFixed(4) + ',' + lat.toFixed(4); }   // ~11 m
 // Celdas de varios tamaños (rejilla alineada) alrededor de cada punto consultado. La respuesta del
 // Catastro identifica la PARCELA ENTERA, así que si una parcela ocupa varios kilómetros no tiene
@@ -2622,6 +2637,7 @@ function subirTrackSobreCatastro() {
 function limpiarCatastro() {
   CATR.generacion++;
   CATR.celdas.clear();   // la zona conocida es de esta ruta: al cambiar de ruta se olvida
+  CATR.tipos = null; CATR.geo = null;   // y la clasificación de los tramos, también
   if (map.getSource('catastroRuta')) map.getSource('catastroRuta').setData(empty);
 }
 // Clasificación de un punto, con caché. La respuesta del Catastro identifica la PARCELA completa, así
@@ -2718,11 +2734,10 @@ async function recorrerCatastro() {
   }
   if (gen !== CATR.generacion) return;
   const SEGS = S.segs || [];
-  const features = [];
+  const tipos = [];
   let publico = 0, particular = 0, sin = 0;
-  // El reborde reutiliza EXACTAMENTE la geometría de los segmentos del track: así va pegado al trazado
-  // por definición (mismos puntos, mismos vértices) y solo tiene que cambiar de color. Cada segmento se
-  // colorea con el tipo de parcela que hay en su punto medio.
+  // Cada tramo del track (los mismos tramos en que ya se divide por pendiente) toma el tipo de parcela
+  // que hay en su punto medio. Así el color cambia en los mismos sitios que el track.
   for (const g of SEGS) {
     const medio = Math.floor((g.i0 + g.i1) / 2);
     let tipo = 'ninguna';
@@ -2736,22 +2751,13 @@ async function recorrerCatastro() {
     if (tipo === 'publico') publico++;
     else if (tipo === 'particular') particular++;
     else sin++;
-    if (tipo !== 'publico' && tipo !== 'particular') continue;
-    // Un trazo fino a cada lado, con los MISMOS vértices del track desplazados unos metros en
-    // perpendicular: así copia su recorrido (curvas y giros incluidos) y queda a unos píxeles del
-    // trazado, sin encima ni debajo.
-    const coords = S.pts.slice(g.i0, g.i1 + 1).map(p => [p.lon, p.lat]);
-    const color = CAT_COLORES[tipo];
-    features.push({
-      type: 'Feature', properties: { color, lado: 'izq' },
-      geometry: { type: 'LineString', coordinates: desplazarLinea(coords, -DESVIO_CATASTRO) }
-    });
-    features.push({
-      type: 'Feature', properties: { color, lado: 'der' },
-      geometry: { type: 'LineString', coordinates: desplazarLinea(coords, DESVIO_CATASTRO) }
-    });
+    tipos.push(tipo === 'publico' || tipo === 'particular' ? tipo : null);
   }
-  map.getSource('catastroRuta').setData({ type: 'FeatureCollection', features });
+  // Se guardan la clasificación y la geometría para poder volver a pintar los trazos al cambiar el
+  // zoom (que se peguen al track) sin consultar nada de nuevo.
+  CATR.tipos = tipos;
+  CATR.geo = SEGS.map(g => S.pts.slice(g.i0, g.i1 + 1).map(p => [p.lon, p.lat]));
+  pintarLineasCatastro();
   CATR.ultimo = { puntos: res.length, publico, particular, sin, errores, consultas: CATR.consultas, refs: new Set(res.map(r => r.ref).filter(Boolean)).size, segmentos: SEGS.length };
   const partes = [];
   if (publico) partes.push(`dominio público ${publico} de ${SEGS.length} tramos`);
@@ -2760,12 +2766,39 @@ async function recorrerCatastro() {
   // Se dice en qué ha quedado y cuántas consultas ha costado: la caché resuelve todos los puntos que
   // caen en una parcela ya consultada, así que en rutas por pocas parcelas largas son muy pocas.
   const coste = ` (${CATR.consultas} consulta${CATR.consultas === 1 ? '' : 's'} para ${res.length} puntos)`;
-  if (!features.length) {
+  if (!publico && !particular) {
     setStatusProgreso(`Catastro en la ruta: ningún tramo que marcar` + coste +
-      (sin === res.length ? ' · el Catastro no da referencia en ninguno' : '') + (errores ? ` · ${errores} sin respuesta` : ''));
+      (sin === res.length ? ' · el Catastro no da referencia en ningún punto' : '') + (errores ? ` · ${errores} sin respuesta` : ''));
     return;
   }
   if (partes.length) setStatusProgreso(`Catastro sobre la ruta: ${partes.join(' · ')}` + coste);
+}
+
+// Pinta los dos trazos finos del Catastro, uno a cada lado del track, separados lo que corresponda al
+// zoom actual (en píxeles de pantalla). Se puede llamar las veces que haga falta sin consultar nada:
+// usa la clasificación ya guardada en CATR.tipos y la geometría del track en CATR.geo.
+function pintarLineasCatastro() {
+  const src = map.getSource && map.getSource('catastroRuta');
+  if (!src) return;
+  if (!prefs.ovCatRuta || !CATR.geo || !CATR.tipos) { src.setData(empty); return; }
+  const desvio = desvioCatastro();
+  const features = [];
+  for (let i = 0; i < CATR.geo.length; i++) {
+    const tipo = CATR.tipos[i];
+    if (!tipo) continue;
+    // La geometría del track se densifica un poco antes de desplazarla: con los vértices tan separados
+    // de un tramo largo, el desplazamiento en perpendicular dejaría escalones en las curvas.
+    let coords = CATR.geo[i];
+    try {
+      coords = densify(coords, Math.max(8, desvio)).map(p => [p.lon, p.lat]);
+    } catch (e) { coords = CATR.geo[i]; }
+    const color = CAT_COLORES[tipo];
+    features.push({ type: 'Feature', properties: { color, lado: 'izq' },
+      geometry: { type: 'LineString', coordinates: desplazarLinea(coords, -desvio) } });
+    features.push({ type: 'Feature', properties: { color, lado: 'der' },
+      geometry: { type: 'LineString', coordinates: desplazarLinea(coords, desvio) } });
+  }
+  src.setData({ type: 'FeatureCollection', features });
 }
 
 async function catastroHtml(ll) {
